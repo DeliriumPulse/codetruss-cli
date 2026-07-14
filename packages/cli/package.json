@@ -1,0 +1,60 @@
+{
+  "name": "@codetruss/cli",
+  "version": "0.2.5",
+  "description": "Local-first scope, quality, and verification receipts for coding agents",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "bin": {
+    "codetruss": "dist/cli.cjs"
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "SBOM.cdx.json",
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DeliriumPulse/codetruss-cli.git"
+  },
+  "homepage": "https://codetruss.com/cli",
+  "bugs": {
+    "url": "https://github.com/DeliriumPulse/codetruss-cli/issues"
+  },
+  "keywords": [
+    "ai-agent",
+    "code-review",
+    "scope-drift",
+    "local-first",
+    "codex",
+    "claude-code"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "release:artifact": "node scripts/build-release.mjs",
+    "verify:artifact": "node scripts/verify-release.mjs",
+    "test:install": "node scripts/test-install.mjs",
+    "prepack": "pnpm build",
+    "test": "vitest run --config vitest.config.ts",
+    "dev": "tsx src/cli.ts"
+  },
+  "devDependencies": {
+    "@codetruss/analyzer-engine": "workspace:*",
+    "@types/node": "^20",
+    "esbuild": "^0.28.1",
+    "minimatch": "^10.0.3",
+    "tsx": "^4.23.0",
+    "typescript": "^5",
+    "vitest": "^4.1.10",
+    "yaml": "^2.8.1"
+  }
+}

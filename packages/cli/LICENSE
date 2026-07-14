@@ -1,0 +1,24 @@
+CodeTruss CLI Proprietary License
+
+Copyright (c) 2026 CodeTruss. All rights reserved.
+
+The CodeTruss CLI and its CodeTruss-authored components are proprietary software,
+not open-source software.
+
+Subject to the CodeTruss Terms of Service at https://codetruss.com/terms, CodeTruss
+grants you a limited, revocable, non-exclusive, non-transferable license to download,
+install, execute, and make reasonable backup copies of the CLI solely for your own
+internal code-quality and evaluation purposes.
+
+You may not sell, sublicense, redistribute, publicly host, or provide the CLI as a
+service to a third party. You may not modify, create derivative works from, reverse
+engineer, decompile, or disassemble it, except to the extent a restriction is
+prohibited by applicable law. No trademark or other intellectual-property rights are
+granted. CodeTruss reserves all rights not expressly granted here.
+
+This license ends automatically if you breach it or the CodeTruss Terms of Service.
+Upon termination, you must stop using and delete the CLI and any copies you control.
+
+Third-party software included with the CLI remains governed by its own license terms,
+which are identified in THIRD_PARTY_NOTICES.md. The warranty disclaimers and liability
+limits in the CodeTruss Terms of Service apply to the CLI.

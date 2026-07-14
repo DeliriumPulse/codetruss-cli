@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, attest, and release
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Activate pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.28.2 --activate
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require tag and package version parity
+        run: |
+          node - <<'NODE'
+          const pkg = require('./packages/cli/package.json')
+          const expected = `v${pkg.version}`
+          if (process.env.GITHUB_REF_NAME !== expected) {
+            throw new Error(`tag ${process.env.GITHUB_REF_NAME} does not match ${expected}`)
+          }
+          NODE
+      - name: Test and build exact release artifacts
+        run: |
+          pnpm typecheck
+          pnpm test
+          pnpm release:artifact
+          pnpm release:verify
+          pnpm test:install
+      - name: Resolve artifact paths
+        id: artifact
+        run: |
+          VERSION="$(node -p "require('./packages/cli/package.json').version")"
+          echo "archive=release/codetruss-cli-${VERSION}.tgz" >> "$GITHUB_OUTPUT"
+          echo "checksum=release/codetruss-cli-${VERSION}.tgz.sha256" >> "$GITHUB_OUTPUT"
+          echo "sbom=release/codetruss-cli-${VERSION}.sbom.cdx.json" >> "$GITHUB_OUTPUT"
+      - name: Attest package build provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.artifact.outputs.archive }}
+      - name: Attest package SBOM
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.artifact.outputs.archive }}
+          sbom-path: ${{ steps.artifact.outputs.sbom }}
+      - name: Create immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.artifact.outputs.archive }}
+          CHECKSUM: ${{ steps.artifact.outputs.checksum }}
+          SBOM: ${{ steps.artifact.outputs.sbom }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$ARCHIVE" \
+            "$CHECKSUM" \
+            "$SBOM" \
+            release/release-manifest.json \
+            --verify-tag \
+            --generate-notes \
+            --title "CodeTruss CLI $GITHUB_REF_NAME"

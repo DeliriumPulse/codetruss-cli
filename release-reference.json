@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "version": "0.2.5",
+  "websiteArchive": "https://codetruss.com/downloads/codetruss-cli-0.2.5.tgz",
+  "archiveSha256": "6c20be6b750de2be92e300dede90e57d493173c6aaab08f77e6350ed762c83a5",
+  "sbomSha256": "1555cc0ce0d00cbece72cd443e80598d6948d2d275a96f191621687597f0719f",
+  "bundleSha256": "1a0b77b87649ba6da46ad714b68f78c4dcd983449af3bb1bfd977c87950ab352"
+}

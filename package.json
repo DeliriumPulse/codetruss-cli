@@ -1,0 +1,22 @@
+{
+  "name": "codetruss-cli-source",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @codetruss/cli build",
+    "typecheck": "pnpm --filter @codetruss/cli exec tsc -p tsconfig.json --noEmit",
+    "test": "pnpm --filter @codetruss/cli test",
+    "release:artifact": "pnpm --filter @codetruss/cli release:artifact",
+    "release:verify": "pnpm --filter @codetruss/cli verify:artifact",
+    "test:install": "pnpm --filter @codetruss/cli test:install",
+    "validate": "pnpm typecheck && pnpm test && pnpm release:artifact && pnpm release:verify && pnpm test:install"
+  },
+  "devDependencies": {
+    "@codetruss/analyzer-engine": "workspace:*"
+  }
+}
