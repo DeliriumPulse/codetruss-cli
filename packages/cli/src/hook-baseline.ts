@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { dirtyFiles, head } from './git.js'
 import { materializeWorkingTreeSnapshot } from './git-snapshot.js'
-import { runGit, runGitText } from './git-process.js'
+import { gitCommandArguments, runGit, runGitText } from './git-process.js'
 import type { PrivateGitObjectStore } from './private-git-object-store.js'
 
 interface TreeEntry {
@@ -52,7 +52,7 @@ async function hashFile(
   assertObjectId: (value: string, label?: string) => void,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['-C', repoRoot, 'hash-object', '-w', '--stdin'], {
+    const child = spawn('git', gitCommandArguments(repoRoot, ['hash-object', '-w', '--stdin']), {
       env: environment,
       stdio: ['pipe', 'pipe', 'pipe'],
     })

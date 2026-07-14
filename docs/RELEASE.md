@@ -10,8 +10,8 @@ npm account, npm token, pre-existing npm package, or npm environment approval.
    Update `release-reference.json` from the immutable website candidate. The
    verifier rejects any archive, SBOM, or executable digest that differs from
    that checked-in reference.
-2. Create and push the matching annotated tag, for example `v0.2.5` for package
-   version `0.2.5`.
+2. Create and push the matching annotated tag, for example `v0.2.13` for package
+   version `0.2.13`.
 3. `.github/workflows/release.yml` installs the locked dependency graph, runs
    typechecking and tests, builds the package, verifies a clean global install,
    creates GitHub build-provenance and SBOM attestations, and finally creates the
@@ -19,8 +19,8 @@ npm account, npm token, pre-existing npm package, or npm environment approval.
 4. Verify the downloaded archive independently:
 
    ```bash
-   gh attestation verify codetruss-cli-0.2.5.tgz --repo DeliriumPulse/codetruss-cli
-   shasum -a 256 -c codetruss-cli-0.2.5.tgz.sha256
+   gh attestation verify codetruss-cli-0.2.13.tgz --repo DeliriumPulse/codetruss-cli
+   shasum -a 256 -c codetruss-cli-0.2.13.tgz.sha256
    ```
 
 The release workflow intentionally has no npm environment, npm credentials, or

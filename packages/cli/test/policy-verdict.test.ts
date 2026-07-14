@@ -56,6 +56,25 @@ describe('verdict rules', () => {
       reasons: ['baseline evidence limitation resolved in the final tree: 1 apparent text file contained binary data'],
     })
   })
+
+  it('prohibits PASS when the requested LLM review covered only a diff prefix', () => {
+    const result = computeVerdict({
+      agentExitCode: 0,
+      verifications: [{ command: 'test', exitCode: 0, durationMs: 1, output: '', truncated: false }],
+      files: [allowed],
+      startDirty: false,
+      findings: [],
+      llm: {
+        provider: 'openai', model: 'gpt-5.6-terra', transmittedBytes: 1_000,
+        diffCoverage: { reviewedBytes: 200_000, totalBytes: 250_000, truncated: true },
+        verdict: 'clean', summary: 'No slop in the reviewed prefix.', findings: [],
+      },
+    })
+    expect(result).toEqual({
+      verdict: 'REVIEW_REQUIRED',
+      reasons: ['local openai review covered 200000 of 250000 diff bytes'],
+    })
+  })
 })
 
 describe('analyzer finding deltas', () => {

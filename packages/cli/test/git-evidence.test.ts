@@ -13,6 +13,7 @@ import {
   parseNumstatZ,
   parseStatusZ,
 } from '../src/git.js'
+import { gitCommandArguments } from '../src/git-process.js'
 import { materializeIndexSnapshot, materializeTreeSnapshot, materializeWorkingTreeSnapshot } from '../src/git-snapshot.js'
 
 const cleanup: string[] = []
@@ -63,8 +64,14 @@ describe('Git evidence parsing', () => {
 })
 
 describe('repository evidence', () => {
-  it('uses Node\'s platform-specific null device for untracked no-index diffs', () => {
-    expect(GIT_NULL_DEVICE).toBe(devNull)
+  it('enables Windows long-path support without mutating Git configuration', () => {
+    expect(gitCommandArguments('/repo', ['status', '--short'])).toEqual([
+      '-c', 'core.longpaths=true', '-C', '/repo', 'status', '--short',
+    ])
+  })
+
+  it('uses the null spelling recognized by Git no-index on each platform', () => {
+    expect(GIT_NULL_DEVICE).toBe(process.platform === 'win32' ? 'NUL' : devNull)
   })
 
   it('uses an explicit empty tree for unborn and first-commit sessions', async () => {

@@ -4,7 +4,7 @@ import { lstatSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { parse, stringify } from 'yaml'
 import { loadSigningKey, normalizePublicKey } from './signing.js'
-import type { CliConfig } from './types.js'
+import { CONFIG_LLM_PROVIDERS, type CliConfig } from './types.js'
 
 export const CONFIG_FILE = '.codetruss.yml'
 export const PRODUCTION_SYNC_ORIGIN = 'https://codetruss.com'
@@ -19,6 +19,11 @@ export const DEFAULT_CONFIG: CliConfig = {
   llm: { maxDiffBytes: 200_000 },
   signing: {},
   sync: { url: PRODUCTION_SYNC_ORIGIN },
+}
+
+export interface InitializeOptions {
+  allow?: string[]
+  deny?: string[]
 }
 
 function objectValue(value: unknown, key: string): Record<string, unknown> {
@@ -65,7 +70,9 @@ export async function loadConfig(root: string): Promise<CliConfig> {
   const signing = objectValue(value.signing, 'signing')
   assertSafeRepoSync(value.sync)
   const provider = llm.provider
-  if (provider !== undefined && !['anthropic', 'openai', 'claude', 'codex'].includes(String(provider))) throw new Error(`unsupported llm.provider ${String(provider)}`)
+  if (provider !== undefined && !CONFIG_LLM_PROVIDERS.includes(String(provider) as typeof CONFIG_LLM_PROVIDERS[number])) throw new Error(`unsupported llm.provider ${String(provider)}`)
+  const model = llm.model
+  const maxDiffBytes = llm.maxDiffBytes
   return {
     version: 1,
     allow: list('allow'),
@@ -74,8 +81,11 @@ export async function loadConfig(root: string): Promise<CliConfig> {
     receipts: { dir: typeof receipts.dir === 'string' ? receipts.dir : DEFAULT_CONFIG.receipts.dir },
     llm: {
       provider: provider as CliConfig['llm']['provider'],
-      model: typeof llm.model === 'string' ? llm.model : undefined,
-      maxDiffBytes: typeof llm.maxDiffBytes === 'number' && llm.maxDiffBytes > 0 ? llm.maxDiffBytes : DEFAULT_CONFIG.llm.maxDiffBytes,
+      model: typeof model === 'string' && model.trim() ? model.trim() : undefined,
+      // Legacy repositories may contain a value that current provider review
+      // rejects. Keep deterministic commands readable; enforce the hard bound
+      // only when --llm is actually requested.
+      maxDiffBytes: typeof maxDiffBytes === 'number' && maxDiffBytes > 0 ? maxDiffBytes : DEFAULT_CONFIG.llm.maxDiffBytes,
     },
     signing: {
       publicKey: typeof signing.publicKey === 'string' && signing.publicKey.trim()
@@ -136,7 +146,17 @@ export function resolveSyncOrigin(explicitDevOrigin = process.env[DEV_SYNC_ORIGI
   return parsed.origin
 }
 
-export async function initialize(root: string, force = false): Promise<string> {
+function initializeGlobs(value: string[] | undefined, name: 'allow' | 'deny'): string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.some((glob) => typeof glob !== 'string' || !glob.trim())) {
+    throw new Error(`init ${name} globs must be non-empty strings`)
+  }
+  return value.map((glob) => glob.trim())
+}
+
+export async function initialize(root: string, force = false, options: InitializeOptions = {}): Promise<string> {
+  const allow = initializeGlobs(options.allow, 'allow')
+  const deny = initializeGlobs(options.deny, 'deny')
   const path = join(root, CONFIG_FILE)
   if (!force) {
     try { await access(path); throw new Error(`${CONFIG_FILE} already exists; pass --force to replace it`) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
@@ -145,8 +165,8 @@ export async function initialize(root: string, force = false): Promise<string> {
   const key = await loadSigningKey(true)
   const value = {
     version: DEFAULT_CONFIG.version,
-    allow: DEFAULT_CONFIG.allow,
-    deny: DEFAULT_CONFIG.deny,
+    allow,
+    deny,
     verify: detected,
     receipts: DEFAULT_CONFIG.receipts,
     llm: DEFAULT_CONFIG.llm,

@@ -30,14 +30,21 @@ async function repository(): Promise<string> {
   return root
 }
 
-function runCli(root: string, args: string[], extraEnvironment: Partial<NodeJS.ProcessEnv> = {}) {
-  return spawnSync(TSX_BIN, [CLI_ENTRY, ...args], {
+function runCli(
+  root: string,
+  args: string[],
+  extraEnvironment: Partial<NodeJS.ProcessEnv> = {},
+  input?: string,
+) {
+  return spawnSync(process.execPath, [TSX_BIN, CLI_ENTRY, ...args], {
     cwd: root,
     encoding: 'utf8',
+    input,
     env: {
       ...process.env,
       ...extraEnvironment,
       HOME: `${root}-home`,
+      USERPROFILE: `${root}-home`,
       CODETRUSS_SIGNING_KEY: join(root, '.codetruss', 'test-signing.pem'),
     },
     maxBuffer: 8 * 1024 * 1024,
@@ -51,6 +58,135 @@ async function latestReceipt(root: string): Promise<Receipt> {
 }
 
 describe('CLI snapshot and delta enforcement', () => {
+  it('initializes repeated scope flags and warns before leaving hooks unconfigured', async () => {
+    const configuredRoot = await repository()
+    const configured = runCli(configuredRoot, [
+      'init',
+      '--allow', 'src/**',
+      '--allow', 'tests/**',
+      '--deny', 'infra/production/**',
+    ])
+    expect(configured.status, configured.stderr).toBe(0)
+    expect(configured.stdout).not.toContain('No allow globs configured')
+    expect(await readFile(join(configuredRoot, '.codetruss.yml'), 'utf8')).toMatch(
+      /allow:\n\s+- src\/\*\*\n\s+- tests\/\*\*[\s\S]*deny:\n\s+- infra\/production\/\*\*/,
+    )
+    const installed = runCli(configuredRoot, ['hooks', 'install', 'all'])
+    expect(installed.status, `${installed.stderr}\n${installed.stdout}`).toBe(0)
+    expect(installed.stdout).toContain('installed ')
+
+    const unconfiguredRoot = await repository()
+    const unconfigured = runCli(unconfiguredRoot, ['init'])
+    expect(unconfigured.status, unconfigured.stderr).toBe(0)
+    expect(unconfigured.stdout).toContain('No allow globs configured')
+    expect(unconfigured.stdout).toContain('agent hooks cannot be installed')
+    expect(await readFile(join(unconfiguredRoot, '.codetruss.yml'), 'utf8')).toContain('allow: []')
+    const refused = runCli(unconfiguredRoot, ['hooks', 'install', 'all'])
+    expect(refused.status).toBe(3)
+    expect(refused.stderr).toContain('agent hooks require at least one allow glob')
+  })
+
+  it('completes the real hook runtime to CLI result-file boundary', async () => {
+    const root = await repository()
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, '.gitignore'), '.codetruss/\n')
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
+    const initialized = runCli(root, ['init', '--allow', 'src/**'])
+    expect(initialized.status, initialized.stderr).toBe(0)
+    git(root, 'add', '.gitignore', '.codetruss.yml', 'src/value.ts')
+    git(root, 'commit', '--quiet', '-m', 'baseline')
+
+    const prompt = {
+      session_id: 'packaged-boundary-session',
+      turn_id: 'packaged-boundary-turn',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Update the scoped value',
+      cwd: root,
+    }
+    const captured = runCli(root, ['hooks', 'dispatch', 'codex'], {}, `${JSON.stringify(prompt)}\n`)
+    expect(captured.status, `${captured.stderr}\n${captured.stdout}`).toBe(0)
+    expect(captured.stdout).toBe('')
+
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 2\n')
+    const stopped = runCli(root, ['hooks', 'dispatch', 'codex'], {}, `${JSON.stringify({
+      ...prompt,
+      hook_event_name: 'Stop',
+      background_tasks: [],
+    })}\n`)
+    expect(stopped.status, `${stopped.stderr}\n${stopped.stdout}`).toBe(0)
+    expect(stopped.stdout).toBe('')
+
+    const receipt = await latestReceipt(root)
+    expect(receipt).toMatchObject({ verdict: 'PASS', task: 'Update the scoped value' })
+    const verified = runCli(root, ['verify', receipt.sessionId])
+    expect(verified.status, verified.stderr).toBe(0)
+    expect(verified.stdout).toContain(`verified ${receipt.sessionId} (PASS)`)
+  }, 30_000)
+
+  it('keeps noisy hook verification bounded without overflowing the child envelope', async () => {
+    const root = await repository()
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, '.gitignore'), '.codetruss/\n')
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
+    expect(runCli(root, ['init', '--allow', 'src/**']).status).toBe(0)
+    const noisyCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify('process.stdout.write("x".repeat(2_000_000))')}`
+    const configPath = join(root, '.codetruss.yml')
+    const initialized = await readFile(configPath, 'utf8')
+    await writeFile(configPath, initialized.replace('verify: []', `verify:\n  - ${JSON.stringify(noisyCommand)}`))
+    const trusted = runCli(root, ['verify-policy', 'trust'])
+    expect(trusted.status, trusted.stderr).toBe(0)
+    git(root, 'add', '.gitignore', '.codetruss.yml', 'src/value.ts')
+    git(root, 'commit', '--quiet', '-m', 'baseline')
+
+    const prompt = {
+      session_id: 'noisy-hook-boundary-session',
+      turn_id: 'noisy-hook-boundary-turn',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Update the value and retain bounded verification evidence',
+      cwd: root,
+    }
+    expect(runCli(root, ['hooks', 'dispatch', 'codex'], {}, `${JSON.stringify(prompt)}\n`).status).toBe(0)
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 2\n')
+    const stopped = runCli(root, ['hooks', 'dispatch', 'codex'], {}, `${JSON.stringify({
+      ...prompt,
+      hook_event_name: 'Stop',
+      background_tasks: [],
+    })}\n`)
+
+    expect(stopped.status, `${stopped.stderr}\n${stopped.stdout}`).toBe(0)
+    expect(stopped.stdout).toBe('')
+    expect(stopped.stderr).not.toContain('x'.repeat(1_000))
+    const receipt = await latestReceipt(root)
+    expect(receipt).toMatchObject({ verdict: 'PASS' })
+    expect(receipt.verifications).toEqual([
+      expect.objectContaining({ exitCode: 0, truncated: true }),
+    ])
+    expect(receipt.verifications[0]!.output.length).toBeLessThanOrEqual(16_384)
+    expect(runCli(root, ['verify', receipt.sessionId]).status).toBe(0)
+  }, 30_000)
+
+  it('creates and verifies a useful first receipt without repository configuration', async () => {
+    const root = await repository()
+    await writeFile(join(root, 'example.ts'), 'export const value = 1\n')
+    git(root, 'add', 'example.ts')
+    git(root, 'commit', '--quiet', '-m', 'baseline')
+    await writeFile(join(root, 'example.ts'), 'export const value = 2\n')
+
+    const reviewed = runCli(root, ['review', '--task', 'Review my current agent changes'])
+    expect(reviewed.status, `${reviewed.stderr}\n${reviewed.stdout}`).toBe(1)
+    expect(reviewed.stdout).toContain('First signed receipt created')
+    expect(reviewed.stdout).toContain('REVIEW_REQUIRED exits 1 by design')
+    expect(reviewed.stdout).toContain('codetruss verify latest')
+    expect(reviewed.stdout).toContain('codetruss init --allow')
+    expect(reviewed.stdout).toContain('After policy: codetruss hooks install all')
+    expect((await readdir(join(root, '.codetruss', 'receipts'))).sort()).toHaveLength(4)
+
+    const verified = runCli(root, ['verify', 'latest'])
+    expect(verified.status, verified.stderr).toBe(0)
+    expect(verified.stdout).toContain('verified ')
+    expect(verified.stdout).toContain('(REVIEW_REQUIRED)')
+  }, 20_000)
+
   it('supports global auth status and logout outside a Git repository', async () => {
     const root = await mkdtemp(join(tmpdir(), 'codetruss-auth-command-'))
     cleanup.push(root, `${root}-home`)
@@ -64,6 +200,27 @@ describe('CLI snapshot and delta enforcement', () => {
     expect(logout.status, logout.stderr).toBe(0)
     expect(logout.stdout).toContain('Already signed out')
   })
+
+  it('keeps legacy LLM settings compatible with deterministic reviews', async () => {
+    const root = await repository()
+    await writeFile(join(root, '.gitignore'), '.codetruss/\n')
+    await writeFile(join(root, 'example.ts'), 'export const value = 1\n')
+
+    for (const [message, config] of [
+      ['legacy Codex provider', 'version: 1\nllm:\n  provider: codex\n'],
+      ['legacy unscoped model', 'version: 1\nllm:\n  model: legacy-model\n'],
+    ] as const) {
+      await writeFile(join(root, '.codetruss.yml'), config)
+      git(root, 'add', '.gitignore', '.codetruss.yml', 'example.ts')
+      git(root, 'commit', '--quiet', '-m', message)
+
+      const result = runCli(root, [
+        'review', '--task', 'Confirm the clean deterministic state', '--allow', 'example.ts', '--no-verify',
+      ])
+      expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0)
+      expect((await latestReceipt(root)).llm).toBeUndefined()
+    }
+  }, 20_000)
 
   it('analyzes exact staged bytes even when the working file hides a staged secret', async () => {
     const root = await repository()
@@ -234,12 +391,21 @@ describe('CLI snapshot and delta enforcement', () => {
   it('gives every verification command a fresh copy of the immutable final tree', async () => {
     const root = await repository()
     await mkdir(join(root, 'src'))
+    await mkdir(join(root, 'verify'))
     await writeFile(join(root, 'src', 'value.ts'), 'export const value = "baseline"\n')
+    await writeFile(join(root, 'verify', 'mutate.cjs'), "require('node:fs').writeFileSync('src/value.ts', 'corrupted\\n')\n")
+    await writeFile(join(root, 'verify', 'assert-final.cjs'), [
+      "const value = require('node:fs').readFileSync('src/value.ts', 'utf8')",
+      "process.exit(value === 'export const value = \\\"intended\\\"\\n' ? 0 : 1)",
+      '',
+    ].join('\n'))
     git(root, 'add', '.')
     git(root, 'commit', '--quiet', '-m', 'baseline')
     await writeFile(join(root, 'src', 'value.ts'), 'export const value = "intended"\n')
-    const mutate = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("require('node:fs').writeFileSync('src/value.ts', 'corrupted\\n')")}`
-    const assertFinal = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("const value=require('node:fs').readFileSync('src/value.ts','utf8');process.exit(value === 'export const value = \\\"intended\\\"\\n' ? 0 : 1)")}`
+    // Script files avoid platform-specific nested `node -e` shell quoting;
+    // this test is about fresh materializations, not cmd.exe parsing.
+    const mutate = `${JSON.stringify(process.execPath)} verify/mutate.cjs`
+    const assertFinal = `${JSON.stringify(process.execPath)} verify/assert-final.cjs`
 
     const result = runCli(root, [
       'review', '--task', 'Set the intended value', '--allow', 'src/**',

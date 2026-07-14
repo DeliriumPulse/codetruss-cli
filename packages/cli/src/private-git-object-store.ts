@@ -87,10 +87,10 @@ async function repositoryStorage(repoRoot: string): Promise<{
     throw new Error(`unsupported Git object format ${JSON.stringify(objectFormat)}`)
   }
   return {
-    // Keep the common-dir spelling returned relative to the caller's root so
-    // platform aliases such as macOS /var -> /private/var do not make a safe
-    // lexical child appear outside its state root.
-    commonDirectory: resolveGitPath(repoRoot, commonValue),
+    // Git and Node can spell the same directory differently (for example a
+    // Windows 8.3 path versus its long form, or macOS /var versus /private/var).
+    // Canonicalize the trusted Git directory before applying containment.
+    commonDirectory: await realpath(resolveGitPath(repoRoot, commonValue)),
     objectDirectory: await realpath(resolveGitPath(repoRoot, objectsValue)),
     objectFormat,
   }
@@ -133,6 +133,34 @@ async function inspectDirectory(path: string): Promise<'missing' | 'directory' |
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'
     throw error
   }
+}
+
+/**
+ * Canonicalize the existing prefix of a path while preserving missing leaf
+ * components. This lets containment compare filesystem identity rather than
+ * platform-specific aliases without requiring the private store to exist yet.
+ */
+async function canonicalPotentialDirectory(path: string): Promise<string> {
+  const missing: string[] = []
+  let current = resolve(path)
+  while (true) {
+    const kind = await inspectDirectory(current)
+    if (kind === 'directory') return join(await realpath(current), ...missing)
+    if (kind === 'symlink') throw new Error(`private Git state contains an unsafe symlink at ${JSON.stringify(current)}`)
+    if (kind === 'other') throw new Error(`private Git state contains an unsafe filesystem entry at ${JSON.stringify(current)}`)
+    const parent = dirname(current)
+    if (parent === current) throw new Error(`private Git state has no existing directory ancestor at ${JSON.stringify(path)}`)
+    missing.unshift(basename(current))
+    current = parent
+  }
+}
+
+async function canonicalPrivateDirectory(commonDirectory: string, target: string): Promise<string> {
+  const candidate = await canonicalPotentialDirectory(target)
+  if (!relativeWithin(join(commonDirectory, 'codetruss'), candidate)) {
+    throw new Error('private Git object stores must stay under the repository CodeTruss state directory')
+  }
+  return candidate
 }
 
 async function ensurePrivatePath(commonDirectory: string, target: string, create: boolean): Promise<void> {
@@ -196,7 +224,7 @@ export function privateGitWriteEnvironment(
 
 async function descriptor(repoRoot: string, directory: string): Promise<PrivateGitObjectStore> {
   const storage = await repositoryStorage(repoRoot)
-  const resolvedDirectory = resolve(directory)
+  const resolvedDirectory = await canonicalPrivateDirectory(storage.commonDirectory, directory)
   assertOwnedLeaf(resolvedDirectory)
   const objectDirectory = join(resolvedDirectory, 'objects')
   return {
@@ -229,12 +257,8 @@ export async function initializePrivateGitObjectStore(
   directory: string,
 ): Promise<PrivateGitObjectStore> {
   const storage = await repositoryStorage(repoRoot)
-  const resolvedDirectory = resolve(directory)
+  const resolvedDirectory = await canonicalPrivateDirectory(storage.commonDirectory, directory)
   assertOwnedLeaf(resolvedDirectory)
-  const codeTrussRoot = join(storage.commonDirectory, 'codetruss')
-  if (!relativeWithin(codeTrussRoot, resolvedDirectory)) {
-    throw new Error('private Git object stores must stay under the repository CodeTruss state directory')
-  }
   await ensurePrivatePath(storage.commonDirectory, dirname(resolvedDirectory), true)
   const kind = await inspectDirectory(resolvedDirectory)
   if (kind === 'directory') {
@@ -269,7 +293,7 @@ export async function openPrivateGitObjectStore(
   directory: string,
 ): Promise<PrivateGitObjectStore> {
   const storage = await repositoryStorage(repoRoot)
-  const resolvedDirectory = resolve(directory)
+  const resolvedDirectory = await canonicalPrivateDirectory(storage.commonDirectory, directory)
   assertOwnedLeaf(resolvedDirectory)
   await ensurePrivatePath(storage.commonDirectory, join(resolvedDirectory, 'objects'), false)
   await readOwnership(resolvedDirectory)
@@ -279,12 +303,8 @@ export async function openPrivateGitObjectStore(
 /** Remove only a validated CodeTruss-owned store; never prune the user's object database. */
 export async function removePrivateGitObjectStore(repoRoot: string, directory: string): Promise<void> {
   const storage = await repositoryStorage(repoRoot)
-  const resolvedDirectory = resolve(directory)
+  const resolvedDirectory = await canonicalPrivateDirectory(storage.commonDirectory, directory)
   assertOwnedLeaf(resolvedDirectory)
-  const codeTrussRoot = join(storage.commonDirectory, 'codetruss')
-  if (!relativeWithin(codeTrussRoot, resolvedDirectory)) {
-    throw new Error('refusing to remove a private Git object store outside the repository CodeTruss state directory')
-  }
   if (await inspectDirectory(dirname(resolvedDirectory)) === 'missing') return
   await ensurePrivatePath(storage.commonDirectory, dirname(resolvedDirectory), false)
   const kind = await inspectDirectory(resolvedDirectory)

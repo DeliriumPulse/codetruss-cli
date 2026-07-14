@@ -45,6 +45,10 @@ const MARKER = 'codetruss-agent-guard'
 const BEGIN_MARKER = `# ${MARKER}:begin`
 const END_MARKER = `# ${MARKER}:end`
 const AGENT_EVENTS = ['UserPromptSubmit', 'PostToolUse', 'Stop'] as const
+// The internal Stop review has a five-minute hard deadline. Keep the installed
+// agent envelope wider so it can persist a failure result and clean private Git
+// evidence before the host terminates the hook process.
+const STOP_HOOK_TIMEOUT_SECONDS = 6 * 60
 const AGENT_RUNNER = `'use strict'
 const { existsSync } = require('node:fs')
 const { execFileSync, spawnSync } = require('node:child_process')
@@ -59,12 +63,19 @@ if (surface !== 'claude' && surface !== 'codex') {
 
 function safeFailure(input, message) {
   let event
+  let stopHookActive = false
   const textInput = input.toString('utf8')
-  try { event = JSON.parse(textInput).hook_event_name } catch {
-    event = /"hook_event_name"\\s*:\\s*"([^"]+)"/.exec(textInput.slice(0, 64 * 1024))?.[1]
+  try {
+    const parsed = JSON.parse(textInput)
+    event = parsed.hook_event_name
+    stopHookActive = parsed.stop_hook_active === true
+  } catch {
+    const prefix = textInput.slice(0, 64 * 1024)
+    event = /"hook_event_name"\\s*:\\s*"([^"]+)"/.exec(prefix)?.[1]
+    stopHookActive = /"stop_hook_active"\\s*:\\s*true/.test(prefix)
   }
   const text = ('CodeTruss hook failed safely: ' + message).slice(0, 9000)
-  if (event === 'UserPromptSubmit') {
+  if (event === 'UserPromptSubmit' || (event === 'Stop' && !stopHookActive)) {
     return { decision: 'block', reason: text }
   }
   return { systemMessage: text }
@@ -87,7 +98,7 @@ process.stdin.on('end', () => {
   }
   let root
   try {
-    root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+    root = execFileSync('git', ['-c', 'core.longpaths=true', 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
   } catch {
     process.stdout.write(JSON.stringify(safeFailure(input, 'could not resolve the Git repository root')) + '\\n')
     process.exit(0)
@@ -298,13 +309,13 @@ function agentCommand(surface: 'claude' | 'codex'): HookHandler {
     }
   }
   return {
-    command: 'node "$(git rev-parse --show-toplevel)/.codetruss/hooks/agent.cjs" codex',
-    commandWindows: "$root = git rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { node (Join-Path $root '.codetruss/hooks/agent.cjs') codex }",
+    command: 'node "$(git -c core.longpaths=true rev-parse --show-toplevel)/.codetruss/hooks/agent.cjs" codex',
+    commandWindows: "$root = git -c core.longpaths=true rev-parse --show-toplevel; if ($LASTEXITCODE -eq 0) { node (Join-Path $root '.codetruss/hooks/agent.cjs') codex }",
   }
 }
 
 function agentHandler(surface: 'claude' | 'codex', event: typeof AGENT_EVENTS[number]): HookHandler {
-  const timeout = event === 'PostToolUse' ? 10 : event === 'UserPromptSubmit' ? 60 : 300
+  const timeout = event === 'PostToolUse' ? 10 : event === 'UserPromptSubmit' ? 60 : STOP_HOOK_TIMEOUT_SECONDS
   const statusMessage = event === 'PostToolUse'
     ? 'Checking scope with CodeTruss'
     : event === 'UserPromptSubmit'
@@ -360,7 +371,7 @@ function stripCodeTrussPreCommit(existing: string): string {
 
 function preCommitBlock(): string {
   return `${BEGIN_MARKER}
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+ROOT="$(git -c core.longpaths=true rev-parse --show-toplevel 2>/dev/null)" || exit 0
 CODETRUSS_STATUS=0
 if [ -x "$ROOT/node_modules/.bin/codetruss" ]; then
   "$ROOT/node_modules/.bin/codetruss" review --staged --task "pre-commit" || CODETRUSS_STATUS=$?

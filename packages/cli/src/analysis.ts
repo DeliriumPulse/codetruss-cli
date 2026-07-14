@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import { computeScores, runAnalyzers, type AnalyzerFinding, type AnalyzerPass, type IndexCoverage } from '@codetruss/analyzer-engine'
+import { runAnalyzers, type AnalyzerFinding, type AnalyzerPass, type IndexCoverage } from '@codetruss/analyzer-engine'
 import { indexRepository } from './indexer.js'
-import type { ChangedFile, Receipt, VerificationResult, Verdict, LlmReview } from './types.js'
+import { LOCAL_ANALYSIS_PROFILE, type ChangedFile, type Receipt, type VerificationResult, type Verdict, type LlmReview } from './types.js'
 
 export async function analyzeRepository(root: string) {
   const index = await indexRepository(root)
@@ -9,7 +9,7 @@ export async function analyzeRepository(root: string) {
   process.env.CODETRUSS_OFFLINE = '1'
   try {
     const result = await runAnalyzers(index)
-    return { ...result, scores: computeScores(index, result.findings), index }
+    return { ...result, index }
   } finally {
     if (priorOffline === undefined) delete process.env.CODETRUSS_OFFLINE
     else process.env.CODETRUSS_OFFLINE = priorOffline
@@ -141,6 +141,9 @@ export function computeVerdict(input: {
   if (input.startDirty) review.push('the working tree was dirty at session start, so exact agent attribution is uncertain')
   const reviewFindings = input.findings.filter((finding) => severityRank[finding.severity] >= severityRank.MEDIUM && !blocking.includes(finding))
   if (reviewFindings.length) review.push(`${reviewFindings.length} medium-or-higher analyzer finding(s) affect changed files`)
+  if (input.llm?.diffCoverage?.truncated) {
+    review.push(`local ${input.llm.provider} review covered ${input.llm.diffCoverage.reviewedBytes} of ${input.llm.diffCoverage.totalBytes} diff bytes`)
+  }
   if (input.llm?.verdict === 'review') review.push(`local ${input.llm.provider} review flagged possible slop or over-engineering`)
   if (!input.verifications.length) notes.push('no verification commands were configured')
   else if (!input.verifications.some((item) => item.exitCode !== 0)) notes.push(`all ${input.verifications.length} verification command(s) passed`)
@@ -153,14 +156,13 @@ export function computeVerdict(input: {
 
 export function analyzerReceipt(
   analysis: Awaited<ReturnType<typeof analyzeRepository>>,
-  baseline?: Awaited<ReturnType<typeof analyzeRepository>>,
+  _baseline?: Awaited<ReturnType<typeof analyzeRepository>>,
   delta?: FindingDelta,
 ): Receipt['analyzers'] {
   return {
     passes: analysis.passes,
     findings: delta ? [...delta.introduced, ...delta.worsened] : analysis.findings,
-    scores: analysis.scores,
-    baselineScores: baseline?.scores,
+    analysisProfile: LOCAL_ANALYSIS_PROFILE,
     delta: delta ? {
       introduced: delta.introduced.length,
       worsened: delta.worsened.length,

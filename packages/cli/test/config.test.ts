@@ -21,6 +21,33 @@ afterEach(() => {
 })
 
 describe('initialization', () => {
+  it('writes only the explicit repository scope globs supplied at init time', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codetruss-init-policy-'))
+    process.env.CODETRUSS_SIGNING_KEY = join(root, 'signing.pem')
+
+    await initialize(root, false, {
+      allow: [' src/** ', 'tests/**'],
+      deny: ['infra/production/**', '.env*'],
+    })
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      allow: ['src/**', 'tests/**'],
+      deny: ['infra/production/**', '.env*'],
+    })
+    const configText = await readFile(join(root, '.codetruss.yml'), 'utf8')
+    expect(configText).not.toContain('"**"')
+  })
+
+  it('rejects blank init globs before writing repository state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codetruss-init-policy-invalid-'))
+    process.env.CODETRUSS_SIGNING_KEY = join(root, 'signing.pem')
+
+    await expect(initialize(root, false, { allow: ['   '] })).rejects.toThrow(
+      'init allow globs must be non-empty strings',
+    )
+    await expect(readFile(join(root, '.codetruss.yml'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('does not invent failing package scripts from a lockfile alone', async () => {
     const root = await mkdtemp(join(tmpdir(), 'codetruss-init-'))
     process.env.CODETRUSS_SIGNING_KEY = join(root, 'signing.pem')
@@ -54,6 +81,20 @@ describe('initialization', () => {
     expect(() => resolveSyncOrigin('https://collector.invalid')).toThrow('loopback origin')
     expect(() => resolveSyncOrigin('http://localhost:3000/steal')).toThrow('without credentials')
     expect(() => resolveSyncOrigin('http://token@localhost:3000')).toThrow('without credentials')
+  })
+
+  it('keeps legacy LLM config readable for deterministic commands', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codetruss-config-llm-'))
+    await writeFile(join(root, '.codetruss.yml'), 'version: 1\nllm:\n  model: sonnet\n')
+    await expect(loadConfig(root)).resolves.toMatchObject({ llm: { model: 'sonnet' } })
+
+    await writeFile(join(root, '.codetruss.yml'), 'version: 1\nllm:\n  provider: codex\n')
+    await expect(loadConfig(root)).resolves.toMatchObject({ llm: { provider: 'codex' } })
+
+    await writeFile(join(root, '.codetruss.yml'), 'version: 1\nllm:\n  provider: claude\n  model: sonnet\n  maxDiffBytes: 200000\n')
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      llm: { provider: 'claude', model: 'sonnet', maxDiffBytes: 200_000 },
+    })
   })
 
   it('confines repository-configured receipt storage to the approved local tree', async () => {

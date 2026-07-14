@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { devNull } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -6,9 +6,34 @@ import type { ChangedFile, ScopeClassification, VerificationResult } from './typ
 import { runGit, runGitText, streamGit, type GitStreamOptions } from './git-process.js'
 
 const DEFAULT_DIFF_CAPTURE_BYTES = 20 * 1024 * 1024
+export const VERIFICATION_TIMEOUT_MS = 2 * 60 * 1_000
+export const INTERNAL_HOOK_WORK_BUDGET_MS = 3 * 60 * 1_000 + 30 * 1_000
+const VERIFICATION_OUTPUT_MARKER = Buffer.from('\n… output truncated …\n')
+const VERIFICATION_TERMINATION_GRACE_MS = 150
 
-/** The current platform's null device, used only as Git's empty no-index side. */
-export const GIT_NULL_DEVICE = devNull
+/**
+ * Git's no-index implementation recognizes only the literal `nul` spelling
+ * on native Windows. Node's `os.devNull` is `\\.\nul`, which Windows can open
+ * but Git does not classify as its missing-file sentinel and can consequently
+ * emit a header without the untracked file body.
+ */
+export const GIT_NULL_DEVICE = process.platform === 'win32' ? 'NUL' : devNull
+
+/** Fair-share a bounded internal-hook budget across commands still to run. */
+export function allocatedVerificationTimeout(
+  deadlineMs: number,
+  nowMs: number,
+  commandsRemaining: number,
+  maximumMs = VERIFICATION_TIMEOUT_MS,
+): number {
+  if (!Number.isSafeInteger(commandsRemaining) || commandsRemaining < 1) {
+    throw new Error('commandsRemaining must be a positive integer')
+  }
+  if (!Number.isFinite(deadlineMs) || !Number.isFinite(nowMs)) {
+    throw new Error('verification deadline values must be finite')
+  }
+  return Math.min(maximumMs, Math.max(0, Math.floor((deadlineMs - nowMs) / commandsRemaining)))
+}
 
 export function findRepoRoot(cwd = process.cwd()): string {
   return resolve(runGitText(cwd, ['rev-parse', '--show-toplevel']).trim())
@@ -341,24 +366,188 @@ export async function runAgent(command: string[], cwd: string): Promise<{ exitCo
   })
 }
 
+class BoundedVerificationOutput {
+  private readonly prefix: Buffer[] = []
+  private prefixBytes = 0
+  private tail = Buffer.alloc(0)
+  private totalBytes = 0
+
+  constructor(private readonly maxBytes: number) {}
+
+  add(chunk: Buffer | string): void {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    if (!bytes.length) return
+    this.totalBytes += bytes.length
+
+    const prefixRemaining = this.maxBytes - this.prefixBytes
+    if (prefixRemaining > 0) {
+      const kept = bytes.subarray(0, prefixRemaining)
+      this.prefix.push(Buffer.from(kept))
+      this.prefixBytes += kept.length
+    }
+
+    if (bytes.length >= this.maxBytes) {
+      this.tail = Buffer.from(bytes.subarray(bytes.length - this.maxBytes))
+      return
+    }
+    const combined = this.tail.length ? Buffer.concat([this.tail, bytes]) : bytes
+    this.tail = Buffer.from(combined.subarray(Math.max(0, combined.length - this.maxBytes)))
+  }
+
+  result(suffix = ''): { output: string; truncated: boolean } {
+    const suffixBytes = Buffer.from(suffix)
+    if (suffixBytes.length >= this.maxBytes) {
+      return {
+        // Preserve the beginning of an operational failure suffix so even an
+        // unusually small capture budget retains the deterministic reason.
+        output: suffixBytes.subarray(0, this.maxBytes).toString('utf8'),
+        truncated: this.totalBytes > 0 || suffixBytes.length > this.maxBytes,
+      }
+    }
+
+    const outputBudget = this.maxBytes - suffixBytes.length
+    const output = this.render(outputBudget)
+    return {
+      output: Buffer.concat([output.bytes, suffixBytes]).toString('utf8'),
+      truncated: output.truncated,
+    }
+  }
+
+  private render(limit: number): { bytes: Buffer; truncated: boolean } {
+    if (this.totalBytes <= limit) {
+      return { bytes: Buffer.concat(this.prefix, this.totalBytes), truncated: false }
+    }
+    if (limit <= VERIFICATION_OUTPUT_MARKER.length) {
+      return {
+        bytes: Buffer.concat(this.prefix, this.prefixBytes).subarray(0, limit),
+        truncated: true,
+      }
+    }
+    const available = limit - VERIFICATION_OUTPUT_MARKER.length
+    const headBytes = Math.ceil(available / 2)
+    const tailBytes = available - headBytes
+    const head = Buffer.concat(this.prefix, this.prefixBytes).subarray(0, headBytes)
+    const tail = this.tail.subarray(Math.max(0, this.tail.length - tailBytes))
+    return {
+      bytes: Buffer.concat([head, VERIFICATION_OUTPUT_MARKER, tail]),
+      truncated: true,
+    }
+  }
+}
+
+function signalVerificationProcessGroup(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(-pid, signal)
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ESRCH') return false
+    return code === 'EPERM'
+  }
+}
+
+function verificationDelay(milliseconds: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds))
+}
+
+async function terminateVerificationProcessTree(pid: number): Promise<void> {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/pid', String(pid), '/t', '/f'], {
+      stdio: 'ignore',
+      timeout: 2_000,
+      windowsHide: true,
+    })
+    return
+  }
+  if (!signalVerificationProcessGroup(pid, 'SIGTERM')) return
+  await verificationDelay(VERIFICATION_TERMINATION_GRACE_MS)
+  signalVerificationProcessGroup(pid, 'SIGKILL')
+}
+
 export async function runVerification(
   command: string,
   cwd: string,
   maxBytes = 16_384,
   environment: NodeJS.ProcessEnv = process.env,
+  timeoutMs = VERIFICATION_TIMEOUT_MS,
+  streamOutput = true,
 ): Promise<VerificationResult> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error('verification maxBytes must be a positive integer')
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('verification timeoutMs must be a positive integer')
   const started = Date.now()
   return new Promise((resolveResult) => {
-    const child = spawn(command, { cwd, shell: true, env: environment })
-    const chunks: Buffer[] = []
-    child.stdout.on('data', (chunk) => { process.stdout.write(chunk); chunks.push(Buffer.from(chunk)) })
-    child.stderr.on('data', (chunk) => { process.stderr.write(chunk); chunks.push(Buffer.from(chunk)) })
-    child.once('error', (error) => resolveResult({ command, exitCode: 127, durationMs: Date.now() - started, output: error.message, truncated: false }))
-    child.once('exit', (code) => {
-      const all = Buffer.concat(chunks)
-      const truncated = all.length > maxBytes
-      const kept = truncated ? Buffer.concat([all.subarray(0, maxBytes / 2), Buffer.from('\n… output truncated …\n'), all.subarray(all.length - maxBytes / 2)]) : all
-      resolveResult({ command, exitCode: code ?? 1, durationMs: Date.now() - started, output: kept.toString('utf8'), truncated })
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      env: environment,
+      detached: process.platform !== 'win32',
+      windowsHide: true,
+    })
+    const output = new BoundedVerificationOutput(maxBytes)
+    let settled = false
+    let cleanupPromise: Promise<void> | undefined
+
+    const cleanup = (): Promise<void> => {
+      cleanupPromise ??= child.pid === undefined ? Promise.resolve() : terminateVerificationProcessTree(child.pid)
+      return cleanupPromise
+    }
+    const finish = (exitCode: number, suffix = ''): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const captured = output.result(suffix)
+      resolveResult({
+        command,
+        exitCode,
+        durationMs: Date.now() - started,
+        output: captured.output,
+        truncated: captured.truncated,
+      })
+    }
+    const cleanupAndFinish = (exitCode: number, suffix = ''): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      void cleanup().finally(() => {
+        child.stdout.destroy()
+        child.stderr.destroy()
+        const captured = output.result(suffix)
+        resolveResult({
+          command,
+          exitCode,
+          durationMs: Date.now() - started,
+          output: captured.output,
+          truncated: captured.truncated,
+        })
+      })
+    }
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      if (streamOutput) process.stdout.write(chunk)
+      output.add(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      if (streamOutput) process.stderr.write(chunk)
+      output.add(chunk)
+    })
+
+    const timer = setTimeout(() => {
+      cleanupAndFinish(124, `${output.result().output ? '\n' : ''}CodeTruss verification timed out after ${timeoutMs}ms.\n`)
+    }, timeoutMs)
+    timer.unref()
+
+    child.once('error', (error) => cleanupAndFinish(127, `${output.result().output ? '\n' : ''}${error.message}`))
+    child.once('exit', () => {
+      // A verification may fork a background process that keeps inherited
+      // pipes open. Terminate the whole isolated group before awaiting close,
+      // but retain the deadline until close: on Windows an already-exited
+      // leader may no longer be addressable by taskkill, and an escaped child
+      // must not make the CLI wait forever on its inherited pipe handles.
+      void cleanup()
+    })
+    child.once('close', (code) => {
+      clearTimeout(timer)
+      void cleanup().finally(() => finish(code ?? 1))
     })
   })
 }

@@ -57,11 +57,50 @@ export function newSessionId(now = new Date()): string {
   return `${stamp}-${sha256(`${process.pid}:${Math.random()}:${now.getTime()}`).slice(0, 6)}`
 }
 
+/**
+ * One immutable hook attempt owns one receipt path, even if the hook or CLI
+ * process crashes after writing receipt files but before committing its result.
+ */
+export function hookSessionId(now: Date, attemptId: string): string {
+  if (!/^[0-9a-f]{64}$/.test(attemptId)) throw new Error('hook receipt attempt id is invalid')
+  const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.(\d{3})Z$/, '$1Z')
+  return `${stamp}-hook-${attemptId}`
+}
+
 export function exitCode(verdict: Verdict): number {
   return verdict === 'PASS' ? 0 : verdict === 'REVIEW_REQUIRED' ? 1 : 2
 }
 
-export function renderMarkdown(receipt: Receipt): string {
+function legacyScoreLines(receipt: Receipt): string[] {
+  if ('analysisProfile' in receipt.analyzers || !receipt.analyzers.scores) return []
+  return [
+    `Final scores: health ${receipt.analyzers.scores.health}, debt ${receipt.analyzers.scores.debt}, architecture ${receipt.analyzers.scores.architecture}, security ${receipt.analyzers.scores.security}, docs ${receipt.analyzers.scores.docs}.`,
+    ...(receipt.analyzers.baselineScores ? [
+      `Baseline scores: health ${receipt.analyzers.baselineScores.health}, debt ${receipt.analyzers.baselineScores.debt}, architecture ${receipt.analyzers.baselineScores.architecture}, security ${receipt.analyzers.baselineScores.security}, docs ${receipt.analyzers.baselineScores.docs}.`,
+    ] : []),
+  ]
+}
+
+function analysisProfileLines(receipt: Receipt): string[] {
+  const current = 'analysisProfile' in receipt.analyzers && receipt.analyzers.analysisProfile
+  return [
+    '## Analysis profile',
+    '',
+    ...(current ? [
+      `Profile: \`${current.id}\`.`,
+      '',
+      'The 13 deterministic registry analyzers ran locally. Hosted graph and SAST passes were omitted.',
+    ] : [
+      'Legacy local receipt. Earlier CLI versions emitted numeric scores without hosted graph and SAST; those values are suppressed.',
+    ]),
+    '',
+    'Hosted Health scores: **N/A**. Local receipts do not calculate hosted scores without the graph and SAST passes.',
+    '',
+    '[Run a hosted full audit](https://codetruss.com/dashboard/repos/new?source=cli-receipt).',
+  ]
+}
+
+function renderMarkdownInternal(receipt: Receipt, preserveLegacyScores: boolean): string {
   const lines = [
     `# CodeTruss receipt — ${receipt.verdict}`,
     '',
@@ -91,10 +130,7 @@ export function renderMarkdown(receipt: Receipt): string {
     '|---|---|---|---|',
     ...receipt.analyzers.findings.slice(0, 100).map((finding) => `| ${finding.severity} | ${finding.analyzerId ?? 'unknown'} | ${finding.filePath ? `\`${finding.filePath}${finding.line ? `:${finding.line}` : ''}\`` : 'repository'} | ${finding.title.replaceAll('|', '\\|')} |`),
     '',
-    `Final scores: health ${receipt.analyzers.scores.health}, debt ${receipt.analyzers.scores.debt}, architecture ${receipt.analyzers.scores.architecture}, security ${receipt.analyzers.scores.security}, docs ${receipt.analyzers.scores.docs}.`,
-    ...(receipt.analyzers.baselineScores ? [
-      `Baseline scores: health ${receipt.analyzers.baselineScores.health}, debt ${receipt.analyzers.baselineScores.debt}, architecture ${receipt.analyzers.baselineScores.architecture}, security ${receipt.analyzers.baselineScores.security}, docs ${receipt.analyzers.baselineScores.docs}.`,
-    ] : []),
+    ...(preserveLegacyScores ? legacyScoreLines(receipt) : analysisProfileLines(receipt)),
     ...(receipt.analyzers.delta ? [
       `Finding delta: ${receipt.analyzers.delta.introduced} introduced, ${receipt.analyzers.delta.worsened} worsened, ${receipt.analyzers.delta.recurring} recurring, ${receipt.analyzers.delta.resolved} resolved.`,
     ] : []),
@@ -103,9 +139,32 @@ export function renderMarkdown(receipt: Receipt): string {
     '',
     ...(receipt.verifications.length ? receipt.verifications.map((item) => `- \`${item.command}\` — exit ${item.exitCode} in ${item.durationMs}ms${item.truncated ? ' (output truncated)' : ''}`) : ['- No verification commands configured.']),
   ]
-  if (receipt.llm) lines.push('', '## Optional LLM review', '', `Provider: ${receipt.llm.provider}. Sent ${receipt.llm.transmittedBytes} bytes directly to that provider.`, '', receipt.llm.summary, ...receipt.llm.findings.map((item) => `- ${item}`))
+  if (receipt.llm) {
+    const coverage = receipt.llm.diffCoverage
+    lines.push(
+      '',
+      '## Optional LLM review',
+      '',
+      coverage
+        ? `Provider: ${receipt.llm.provider}. Sent ${receipt.llm.transmittedBytes} bytes directly to that provider. Reviewed ${coverage.reviewedBytes}/${coverage.totalBytes} diff bytes${coverage.truncated ? ' (truncated; PASS prohibited)' : ' (complete)'}.`
+        : `Provider: ${receipt.llm.provider}. Sent ${receipt.llm.transmittedBytes} bytes directly to that provider.`,
+      '',
+      receipt.llm.summary,
+      ...receipt.llm.findings.map((item) => `- ${item}`),
+    )
+  }
   lines.push('', '## Coverage and privacy', '', ...receipt.coverageNotes.map((note) => `- ${note}`), '', '_The signature proves these receipt bytes have not changed since signing. It does not prove trusted execution or that every analysis conclusion is correct._', '')
   return lines.join('\n')
+}
+
+/** Render the current honest local profile, including when displaying a legacy receipt. */
+export function renderMarkdown(receipt: Receipt): string {
+  return renderMarkdownInternal(receipt, false)
+}
+
+/** Byte-compatible renderer used only to verify Markdown written by older receipt-v1 clients. */
+export function renderLegacyMarkdown(receipt: Receipt): string {
+  return renderMarkdownInternal(receipt, true)
 }
 
 async function writePrivateAtomic(path: string, value: string | Buffer): Promise<void> {
@@ -178,7 +237,9 @@ export async function verifyReceipt(dir: string, id = 'latest', pinnedPublicKey?
   const signature = (await readFile(join(dir, receipt.evidence.signatureFile), 'utf8')).trim()
   if (!verifyBytes(jsonBytes, trustedPublicKey, signature)) throw new Error('receipt signature does not match')
   const markdown = await readFile(join(dir, `${receipt.sessionId}.md`), 'utf8')
-  if (markdown !== renderMarkdown(receipt)) throw new Error('Markdown receipt does not match the signed JSON')
+  const currentMarkdown = renderMarkdown(receipt)
+  const legacyMarkdown = !('analysisProfile' in receipt.analyzers) ? renderLegacyMarkdown(receipt) : null
+  if (markdown !== currentMarkdown && markdown !== legacyMarkdown) throw new Error('Markdown receipt does not match the signed JSON')
   if (sha256(markdown) !== receipt.evidence.markdownSha256) throw new Error('Markdown receipt hash does not match')
   if (receipt.evidence.patchFile) {
     const patch = await readFile(join(dir, receipt.evidence.patchFile))

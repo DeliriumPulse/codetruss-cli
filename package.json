@@ -10,11 +10,12 @@
   "scripts": {
     "build": "pnpm --filter @codetruss/cli build",
     "typecheck": "pnpm --filter @codetruss/cli exec tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm build",
     "test": "pnpm --filter @codetruss/cli test",
     "release:artifact": "pnpm --filter @codetruss/cli release:artifact",
     "release:verify": "pnpm --filter @codetruss/cli verify:artifact",
     "test:install": "pnpm --filter @codetruss/cli test:install",
-    "validate": "pnpm typecheck && pnpm test && pnpm release:artifact && pnpm release:verify && pnpm test:install"
+    "validate": "pnpm typecheck && pnpm release:artifact && pnpm test && pnpm release:verify && pnpm test:install"
   },
   "devDependencies": {
     "@codetruss/analyzer-engine": "workspace:*"

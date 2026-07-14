@@ -1,0 +1,13 @@
+{
+  "name": "@codetruss/cli",
+  "version": "0.2.13",
+  "url": "/downloads/codetruss-cli-0.2.13.tgz",
+  "latestUrl": "/downloads/codetruss-cli-latest.tgz",
+  "sha256": "2d13b2912c6e4ca0ab59880f39864f9a019487c191c1a6a41bbcbaf6d694b81c",
+  "sbomUrl": "/downloads/codetruss-cli-0.2.13.sbom.cdx.json",
+  "sbomSha256": "60d5126f46b295de8481d7a5265fba6b22852b8abb35940e69a250829ed459ed",
+  "node": ">=20.9.0",
+  "repository": "https://github.com/DeliriumPulse/codetruss-cli",
+  "releaseUrl": "https://github.com/DeliriumPulse/codetruss-cli/releases/tag/v0.2.13",
+  "attestationCommand": "gh attestation verify codetruss-cli-0.2.13.tgz --repo DeliriumPulse/codetruss-cli"
+}

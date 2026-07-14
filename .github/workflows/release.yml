@@ -68,7 +68,7 @@ jobs:
         with:
           subject-path: ${{ steps.artifact.outputs.archive }}
           sbom-path: ${{ steps.artifact.outputs.sbom }}
-      - name: Create immutable GitHub release
+      - name: Create, populate, and publish immutable GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           ARCHIVE: ${{ steps.artifact.outputs.archive }}
@@ -76,10 +76,13 @@ jobs:
           SBOM: ${{ steps.artifact.outputs.sbom }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            "$ARCHIVE" \
-            "$CHECKSUM" \
-            "$SBOM" \
-            release/release-manifest.json \
+            --draft \
             --verify-tag \
             --generate-notes \
             --title "CodeTruss CLI $GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" \
+            "$ARCHIVE" \
+            "$CHECKSUM" \
+            "$SBOM" \
+            release/release-manifest.json
+          gh release edit "$GITHUB_REF_NAME" --draft=false
