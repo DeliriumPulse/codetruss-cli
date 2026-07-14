@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildDeterministicPackageArchive, deterministicGzip, PACKAGE_ARCHIVE_FILES } from './deterministic-package.mjs'
-import { npmPurl } from './generate-sbom.mjs'
+import { cycloneDxSerialNumber, npmPurl } from './generate-sbom.mjs'
 import { decodeDeterministicGzip, verifyDeterministicPackageArchive } from './verify-deterministic-package.mjs'
 
 function rejects(fn, pattern) {
@@ -32,6 +32,22 @@ assert.equal(
   'pkg:npm/%40codetruss/analyzer-engine@0.1.0',
 )
 assert.equal(npmPurl('yaml', '2.8.1'), 'pkg:npm/yaml@2.8.1')
+assert.equal(
+  cycloneDxSerialNumber('@codetruss/cli', '0.2.14'),
+  'urn:uuid:ba46f3f9-7de6-5197-8fe5-af77d139712c',
+)
+assert.equal(
+  cycloneDxSerialNumber('@codetruss/cli', '0.2.14'),
+  cycloneDxSerialNumber('@codetruss/cli', '0.2.14'),
+)
+assert.notEqual(
+  cycloneDxSerialNumber('@codetruss/cli', '0.2.14'),
+  cycloneDxSerialNumber('@codetruss/cli', '0.2.13'),
+)
+assert.match(
+  cycloneDxSerialNumber('@codetruss/cli', '0.2.14'),
+  /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+)
 
 for (const size of [0, 65_535, 65_536, 131_070]) {
   const input = Buffer.alloc(size, size & 0xff)

@@ -25,7 +25,7 @@ async function writeRelease(archivePackageDir = packageDir) {
   const entries = verifyDeterministicPackageArchive(archive)
   const bundle = entries.get('package/dist/cli.cjs')
   if (!bundle) throw new Error('fixture archive does not contain the CLI executable')
-  const sbom = await readFile(join(packageDir, 'SBOM.cdx.json'))
+  const sbom = await readFile(join(archivePackageDir, 'SBOM.cdx.json'))
   const archiveSha256 = digest(archive)
   const sbomSha256 = digest(sbom)
   await writeFile(join(releaseDir, sbomName), sbom)
@@ -105,6 +105,18 @@ try {
   const sidecarPath = join(releaseDir, `codetruss-cli-${pkg.version}.tgz.sha256`)
   await writeFile(sidecarPath, `${await readFile(sidecarPath, 'utf8')}untrusted trailing bytes\n`)
   await assert.rejects(() => verify(), /not the canonical checksum/)
+
+  for (const file of PACKAGE_ARCHIVE_FILES) {
+    await copyFile(join(packageDir, file.source), join(tamperedPackageDir, file.source))
+  }
+  const noncanonicalSbom = JSON.parse(await readFile(join(tamperedPackageDir, 'SBOM.cdx.json'), 'utf8'))
+  delete noncanonicalSbom.serialNumber
+  await writeFile(join(tamperedPackageDir, 'SBOM.cdx.json'), `${JSON.stringify(noncanonicalSbom, null, 2)}\n`)
+  await writeRelease(tamperedPackageDir)
+  await assert.rejects(
+    () => verify(tamperedPackageDir),
+    /does not have the canonical CycloneDX identity/,
+  )
 } finally {
   await rm(scratch, { recursive: true, force: true })
 }
