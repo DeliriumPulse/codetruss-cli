@@ -27,6 +27,44 @@ codetruss review --task "Review my current agent changes"
 codetruss verify latest
 ```
 
+Homebrew on macOS:
+
+```bash
+brew install DeliriumPulse/codetruss/codetruss
+```
+
+## Claude Code, Codex, and Agent Skills
+
+The official open integration wrappers teach coding agents to configure and
+operate the separately installed local CLI. They do not contain another
+analyzer, add an MCP server, or create a new upload path.
+
+Claude Code:
+
+```bash
+claude plugin marketplace add DeliriumPulse/codetruss-plugins
+claude plugin install codetruss@codetruss
+```
+
+Codex:
+
+```bash
+codex plugin marketplace add DeliriumPulse/codetruss-plugins
+codex plugin add codetruss@codetruss
+```
+
+Agent Skills clients can install the same canonical skill from the public
+wrapper repository:
+
+```bash
+npx --yes skills add DeliriumPulse/codetruss-plugins \
+  --skill codetruss --agent codex -y
+```
+
+See [DeliriumPulse/codetruss-plugins](https://github.com/DeliriumPulse/codetruss-plugins)
+for the MIT-licensed manifests, skill instructions, privacy guardrails, and
+marketplace source.
+
 The first receipt needs no account or configuration. With no allow policy,
 changed files are deliberately classified as unexpected, so the review exits
 `1` with `REVIEW_REQUIRED` and still writes a signed receipt. Then make the
