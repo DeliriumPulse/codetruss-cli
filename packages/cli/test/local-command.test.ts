@@ -27,6 +27,26 @@ describe('local provider process isolation', () => {
     expect(result).toMatchObject({ stdout: input, stderr: '', exitCode: 0, signal: null })
   })
 
+  it('uses an explicit minimal environment instead of leaking parent secrets', async () => {
+    const cwd = await temporaryDirectory()
+    process.env.CODETRUSS_LOCAL_COMMAND_SECRET_MARKER = 'must-not-leak'
+    try {
+      const result = await runLocalCommand({
+        command: process.execPath,
+        args: ['-e', 'process.stdout.write(JSON.stringify(process.env))'],
+        cwd,
+        env: { PATH: process.env.PATH, CODETRUSS_ALLOWED_MARKER: 'allowed' },
+        timeoutMs: 2_000,
+      })
+
+      const childEnvironment = JSON.parse(result.stdout) as Record<string, string>
+      expect(childEnvironment.CODETRUSS_ALLOWED_MARKER).toBe('allowed')
+      expect(childEnvironment.CODETRUSS_LOCAL_COMMAND_SECRET_MARKER).toBeUndefined()
+    } finally {
+      delete process.env.CODETRUSS_LOCAL_COMMAND_SECRET_MARKER
+    }
+  })
+
   it('terminates a command that exceeds its deadline', async () => {
     const cwd = await temporaryDirectory()
 

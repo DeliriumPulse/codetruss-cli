@@ -1,11 +1,11 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createSyncEnvelope, newSessionId, verifyReceipt, writeReceipt } from '../src/receipt.js'
-import { verifyBytes } from '../src/signing.js'
-import type { Receipt } from '../src/types.js'
+import { createSyncEnvelope, hookSessionId, newSessionId, renderLegacyMarkdown, renderMarkdown, verifyReceipt, writeReceipt } from '../src/receipt.js'
+import { loadSigningKey, sha256, signBytes, verifyBytes } from '../src/signing.js'
+import { LOCAL_ANALYSIS_PROFILE, type Receipt } from '../src/types.js'
 
 const originalKey = process.env.CODETRUSS_SIGNING_KEY
 afterEach(() => { if (originalKey === undefined) delete process.env.CODETRUSS_SIGNING_KEY; else process.env.CODETRUSS_SIGNING_KEY = originalKey })
@@ -22,12 +22,33 @@ function fixture(root: string, patch = 'diff evidence'): Receipt {
       totalBytes: Buffer.byteLength(patch),
       truncated: false,
     },
-    analyzers: { passes: [], findings: [], scores: { health: 100, debt: 100, architecture: 100, security: 100, docs: 100 }, index: { totalLoc: 0, languages: {}, primaryLanguage: null } },
+    analyzers: { passes: [], findings: [], analysisProfile: LOCAL_ANALYSIS_PROFILE, index: { totalLoc: 0, languages: {}, primaryLanguage: null } },
     verifications: [], coverageNotes: ['local'], verdict: 'PASS', reasons: ['no changes'], evidence: {},
   }
 }
 
+function legacyFixture(root: string, patch = 'diff evidence'): Receipt {
+  const receipt = fixture(root, patch)
+  return {
+    ...receipt,
+    analyzers: {
+      passes: receipt.analyzers.passes,
+      findings: receipt.analyzers.findings,
+      scores: { health: 100, debt: 100, architecture: 100, security: 100, docs: 100 },
+      index: receipt.analyzers.index,
+    },
+  }
+}
+
 describe('signed receipts', () => {
+  it('binds internal hook retries to one deterministic receipt path', () => {
+    const now = new Date('2026-07-14T12:34:56.789Z')
+    const attemptId = 'a'.repeat(64)
+    expect(hookSessionId(now, attemptId)).toBe(`20260714T123456789Z-hook-${attemptId}`)
+    expect(hookSessionId(now, attemptId)).toBe(hookSessionId(now, attemptId))
+    expect(() => hookSessionId(now, 'A'.repeat(64))).toThrow(/attempt id is invalid/)
+  })
+
   it('verifies JSON signature and Markdown/patch hashes and detects tampering', async () => {
     const root = await mkdtemp(join(tmpdir(), 'codetruss-receipt-'))
     const dir = join(root, 'receipts')
@@ -35,9 +56,45 @@ describe('signed receipts', () => {
     const receipt = fixture(root)
     const paths = await writeReceipt(dir, receipt, 'diff evidence')
     await expect(verifyReceipt(dir, receipt.sessionId)).resolves.toMatchObject({ verdict: 'PASS' })
-    expect(await readFile(paths.markdown, 'utf8')).toContain('Policy SHA-256')
+    const markdown = await readFile(paths.markdown, 'utf8')
+    expect(markdown).toContain('Policy SHA-256')
+    expect(markdown).toContain('Profile: `local-registry-v1`')
+    expect(markdown).toContain('Hosted Health scores: **N/A**')
+    expect(markdown).toContain('Hosted graph and SAST passes were omitted')
+    expect(markdown).not.toContain('Final scores:')
     await writeFile(paths.markdown, `${await readFile(paths.markdown, 'utf8')}tampered`)
     await expect(verifyReceipt(dir, receipt.sessionId)).rejects.toThrow('Markdown receipt does not match')
+  })
+
+  it('verifies old score-bearing Markdown but suppresses those legacy scores when reporting it now', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'codetruss-legacy-receipt-'))
+    const dir = join(root, 'receipts')
+    process.env.CODETRUSS_SIGNING_KEY = join(root, 'signing.pem')
+    const receipt = legacyFixture(root)
+    const paths = await writeReceipt(dir, receipt, 'diff evidence')
+    const oldMarkdown = renderLegacyMarkdown(receipt)
+    receipt.evidence.markdownSha256 = sha256(oldMarkdown)
+    const jsonText = `${JSON.stringify(receipt, null, 2)}\n`
+    const key = await loadSigningKey()
+    await writeFile(paths.json, jsonText)
+    await writeFile(paths.markdown, oldMarkdown)
+    await writeFile(paths.signature, `${signBytes(jsonText, key.privateKey)}\n`)
+
+    const verified = await verifyReceipt(dir, receipt.sessionId)
+    expect(oldMarkdown).toContain('Final scores: health 100')
+    expect(renderMarkdown(verified)).toContain('Legacy local receipt')
+    expect(renderMarkdown(verified)).toContain('Hosted Health scores: **N/A**')
+    expect(renderMarkdown(verified)).not.toContain('security 100')
+  })
+
+  it('renders explicit optional LLM diff coverage', () => {
+    const receipt = fixture('/tmp/repo')
+    receipt.llm = {
+      provider: 'openai', model: 'gpt-5.6-terra', transmittedBytes: 1_200,
+      diffCoverage: { reviewedBytes: 200_000, totalBytes: 240_000, truncated: true },
+      verdict: 'clean', summary: 'Reviewed the available prefix.', findings: [],
+    }
+    expect(renderMarkdown(receipt)).toContain('Reviewed 200000/240000 diff bytes (truncated; PASS prohibited).')
   })
 
   it('rejects a forged receipt signed by a substituted embedded key', async () => {
@@ -99,7 +156,7 @@ describe('signed receipts', () => {
     await writeReceipt(dir, receipt, 'private patch')
     const envelope = await createSyncEnvelope(receipt)
     const synced = JSON.parse(envelope.signedReceipt) as Receipt
-    expect(synced.repoRoot).toBe(root.split('/').at(-1))
+    expect(synced.repoRoot).toBe(basename(root))
     expect(synced.startDirtyFiles).toEqual(['src/changed.ts'])
     expect(synced.policy).toEqual({ sha256: 'c'.repeat(64) })
     expect(synced.agent?.command).toEqual(['codex'])

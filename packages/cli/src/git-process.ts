@@ -33,10 +33,21 @@ export interface GitRunResult {
   stderr: Buffer
 }
 
+/**
+ * Keep every CodeTruss-owned Git process usable beneath long repository and
+ * private-evidence paths. Git for Windows otherwise retains the legacy
+ * MAX_PATH limit unless `core.longpaths` is enabled. The command-local setting
+ * does not mutate the user's repository or global configuration and is a
+ * harmless no-op on other platforms.
+ */
+export function gitCommandArguments(root: string, args: string[]): string[] {
+  return ['-c', 'core.longpaths=true', '-C', root, ...args]
+}
+
 /** Run a bounded Git metadata command, surfacing spawn/maxBuffer failures. */
 export function runGit(root: string, args: string[], options: GitRunOptions = {}): GitRunResult {
   const allowedExitCodes = options.allowedExitCodes ?? [0]
-  const result = spawnSync('git', ['-C', root, ...args], {
+  const result = spawnSync('git', gitCommandArguments(root, args), {
     encoding: null,
     env: options.env ?? process.env,
     input: options.input,
@@ -72,7 +83,7 @@ export async function streamGit(
 ): Promise<number> {
   const allowedExitCodes = options.allowedExitCodes ?? [0]
   return new Promise<number>((resolve, reject) => {
-    const child = spawn('git', ['-C', root, ...args], {
+    const child = spawn('git', gitCommandArguments(root, args), {
       env: options.env ?? process.env,
       signal: options.signal,
       stdio: ['ignore', 'pipe', 'pipe'],

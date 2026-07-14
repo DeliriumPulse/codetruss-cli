@@ -1,6 +1,6 @@
 {
   "name": "@codetruss/cli",
-  "version": "0.2.5",
+  "version": "0.2.13",
   "description": "Local-first scope, quality, and verification receipts for coding agents",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
@@ -44,7 +44,8 @@
     "verify:artifact": "node scripts/verify-release.mjs",
     "test:install": "node scripts/test-install.mjs",
     "prepack": "pnpm build",
-    "test": "vitest run --config vitest.config.ts",
+    "pretest": "pnpm build",
+    "test": "vitest run --config vitest.config.ts && node scripts/test-deterministic-package.mjs && node scripts/test-release-verifier.mjs",
     "dev": "tsx src/cli.ts"
   },
   "devDependencies": {

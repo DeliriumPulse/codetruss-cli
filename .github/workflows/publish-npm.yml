@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing attested GitHub release tag, for example v0.2.1
+        description: Existing attested GitHub release tag, for example v0.2.13
         required: true
         type: string
       confirm_publish:
@@ -37,7 +37,8 @@ jobs:
       - name: Check out the selected tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.tag }}
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -59,6 +60,8 @@ jobs:
             throw new Error(`requested tag ${process.env.RELEASE_TAG} does not match ${expected}`)
           }
           NODE
+          TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          test "$(git rev-parse HEAD)" = "$TAG_COMMIT"
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
       - name: Download the existing GitHub release assets
@@ -67,6 +70,22 @@ jobs:
         run: |
           mkdir release
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets > release-assets.json
+          node - <<'NODE'
+          const { assets } = require('./release-assets.json')
+          const version = require('./packages/cli/package.json').version
+          const actual = assets.map((asset) => asset.name).sort()
+          const expected = [
+            `codetruss-cli-${version}.sbom.cdx.json`,
+            `codetruss-cli-${version}.tgz`,
+            `codetruss-cli-${version}.tgz.sha256`,
+            'release-manifest.json',
+          ].sort()
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+            throw new Error(`release assets differ from the exact publish set: ${actual.join(', ')}`)
+          }
+          NODE
+          rm release-assets.json
       - name: Verify exact release bytes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,7 +95,19 @@ jobs:
           pnpm test:install
           VERSION="$(node -p "require('./packages/cli/package.json').version")"
           gh attestation verify "release/codetruss-cli-${VERSION}.tgz" --repo "$GITHUB_REPOSITORY"
+      - name: Dry-run the exact npm package path
+        run: |
+          VERSION="$(node -p "require('./packages/cli/package.json').version")"
+          npm publish "./release/codetruss-cli-${VERSION}.tgz" \
+            --dry-run \
+            --access public \
+            --registry=https://registry.npmjs.org \
+            --tag=latest
       - name: Publish with npm trusted publishing
         run: |
           VERSION="$(node -p "require('./packages/cli/package.json').version")"
-          npm publish "release/codetruss-cli-${VERSION}.tgz" --access public --provenance
+          npm publish "./release/codetruss-cli-${VERSION}.tgz" \
+            --access public \
+            --provenance \
+            --registry=https://registry.npmjs.org \
+            --tag=latest

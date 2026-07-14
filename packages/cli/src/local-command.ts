@@ -25,6 +25,7 @@ export interface LocalCommandRequest {
   args: string[]
   cwd: string
   input?: string
+  env?: Record<string, string | undefined>
   timeoutMs: number
   maxOutputBytes?: number
 }
@@ -83,7 +84,7 @@ export function runLocalCommand(request: LocalCommandRequest): Promise<LocalComm
     const child = spawn(request.command, request.args, {
       cwd: request.cwd,
       detached: process.platform !== 'win32',
-      env: process.env,
+      env: request.env === undefined ? process.env : request.env as NodeJS.ProcessEnv,
       shell: false,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,

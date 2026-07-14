@@ -7,8 +7,12 @@ const scriptDir = dirname(fileURLToPath(import.meta.url))
 const packageDir = resolve(scriptDir, '..')
 const require = createRequire(import.meta.url)
 
-function npmPurl(name, version) {
-  return `pkg:npm/${encodeURIComponent(name)}@${version}`
+export function npmPurl(name, version) {
+  const scoped = /^(@[^/]+)\/([^/]+)$/.exec(name)
+  const packagePath = scoped
+    ? `${encodeURIComponent(scoped[1])}/${encodeURIComponent(scoped[2])}`
+    : encodeURIComponent(name)
+  return `pkg:npm/${packagePath}@${encodeURIComponent(version)}`
 }
 
 function licenseEntry(value) {

@@ -23,8 +23,18 @@ const IGNORED_DIRS = new Set([
 const DEFAULT_MAX_FILES = 20_000
 const DEFAULT_MAX_FILE_BYTES = 1_000_000 // skip reading content over 1MB
 const TEXT_KINDS = new Set(['source', 'component', 'route', 'test', 'config', 'doc', 'migration'])
+const EXTENDED_BINARY_ASSET_RE = /\.(?:webp|avif|woff2?|ttf|otf|eot|pdf|zip|tar|tgz|gz|bz2|xz|zst|br|lz4|7z|rar|jar|war|ear|apk|deb|rpm|dmg|iso|cab|wasm|bin|exe|dll|so|dylib)$/i
 /** Markup/data languages that must never appear in code LOC stats. */
 const NON_CODE_LANGUAGES = new Set(['Markdown', 'YAML', 'JSON'])
+
+export interface IndexWorkingTreeOptions {
+  /**
+   * `historical` preserves the hosted application's pre-extraction classifier.
+   * `binary-aware` additionally treats common binary/archive extensions as
+   * assets, preventing local release files from becoming incomplete text.
+   */
+  assetMode?: 'historical' | 'binary-aware'
+}
 
 /**
  * Vendored/tooling directories: third-party or agent-tooling payloads that
@@ -94,7 +104,10 @@ async function walk(
 }
 
 /** Index a checked-out working tree into a structured RepoIndex. */
-export async function indexWorkingTree(root: string): Promise<RepoIndex> {
+export async function indexWorkingTree(
+  root: string,
+  options: IndexWorkingTreeOptions = {},
+): Promise<RepoIndex> {
   const maxFiles = positiveEnvInt('CODETRUSS_MAX_INDEX_FILES', DEFAULT_MAX_FILES)
   const maxFileBytes = positiveEnvInt('CODETRUSS_MAX_INDEX_FILE_BYTES', DEFAULT_MAX_FILE_BYTES)
   const walkState = { paths: [] as string[], maxFiles, truncated: false }
@@ -160,7 +173,12 @@ export async function indexWorkingTree(root: string): Promise<RepoIndex> {
       continue
     }
 
-    const kind = classifyFile(path)
+    const historicalKind = classifyFile(path)
+    const kind = options.assetMode === 'binary-aware'
+      && historicalKind === 'source'
+      && EXTENDED_BINARY_ASSET_RE.test(path)
+      ? 'asset'
+      : historicalKind
 
     let content: string | null = null
     let loc = 0

@@ -57,7 +57,7 @@ export function classifyFile(path: string): string {
   if (/\.(md|rst|txt)$/.test(base)) return 'doc'
   if (/\/(app|pages)\/.*(page|route|layout)\.[jt]sx?$/.test(p) || p.includes('/api/')) return 'route'
   if (/\.(tsx|jsx|vue|svelte)$/.test(base)) return 'component'
-  if (/\.(json|lock|svg|png|jpe?g|gif|ico|webp|avif|woff2?|ttf|otf|eot|pdf|zip|tar|tgz|gz|bz2|xz|zst|br|lz4|7z|rar|jar|war|ear|apk|deb|rpm|dmg|iso|cab|wasm|bin|exe|dll|so|dylib)$/.test(base)) return 'asset'
+  if (/\.(json|lock|svg|png|jpe?g|gif|ico)$/.test(base)) return 'asset'
   return 'source'
 }
 

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { emptyTree, head } from './git.js'
-import { runGit, runGitText } from './git-process.js'
+import { gitCommandArguments, runGit, runGitText } from './git-process.js'
 
 export interface SnapshotOptions {
   /** Optional parent for snapshots that should inherit a repository's node_modules. */
@@ -101,7 +101,7 @@ async function materialize(
 }
 
 async function streamBlob(repoRoot: string, oid: string, destination: string, gitEnvironment?: NodeJS.ProcessEnv): Promise<void> {
-  const child = spawn('git', ['-C', repoRoot, 'cat-file', 'blob', oid], {
+  const child = spawn('git', gitCommandArguments(repoRoot, ['cat-file', 'blob', oid]), {
     ...(gitEnvironment ? { env: gitEnvironment } : {}),
     stdio: ['ignore', 'pipe', 'pipe'],
   })

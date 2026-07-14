@@ -1,0 +1,169 @@
+{
+  "$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:npm/%40codetruss/cli@0.2.13",
+      "name": "@codetruss/cli",
+      "version": "0.2.13",
+      "description": "Local-first scope, quality, and verification receipts for coding agents",
+      "licenses": [
+        {
+          "license": {
+            "name": "CodeTruss CLI Proprietary License"
+          }
+        }
+      ],
+      "purl": "pkg:npm/%40codetruss/cli@0.2.13"
+    },
+    "properties": [
+      {
+        "name": "codetruss:distribution",
+        "value": "single-file JavaScript bundle"
+      },
+      {
+        "name": "codetruss:runtimeDependencies",
+        "value": "0"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40codetruss/analyzer-engine@0.1.0",
+      "name": "@codetruss/analyzer-engine",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "CodeTruss CLI Proprietary License"
+          }
+        }
+      ],
+      "purl": "pkg:npm/%40codetruss/analyzer-engine@0.1.0",
+      "properties": [
+        {
+          "name": "codetruss:bundled",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/balanced-match@4.0.4",
+      "name": "balanced-match",
+      "version": "4.0.4",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:npm/balanced-match@4.0.4",
+      "properties": [
+        {
+          "name": "codetruss:bundled",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/brace-expansion@5.0.7",
+      "name": "brace-expansion",
+      "version": "5.0.7",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:npm/brace-expansion@5.0.7",
+      "properties": [
+        {
+          "name": "codetruss:bundled",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/minimatch@10.2.5",
+      "name": "minimatch",
+      "version": "10.2.5",
+      "licenses": [
+        {
+          "license": {
+            "id": "BlueOak-1.0.0"
+          }
+        }
+      ],
+      "purl": "pkg:npm/minimatch@10.2.5",
+      "properties": [
+        {
+          "name": "codetruss:bundled",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/yaml@2.9.0",
+      "name": "yaml",
+      "version": "2.9.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ],
+      "purl": "pkg:npm/yaml@2.9.0",
+      "properties": [
+        {
+          "name": "codetruss:bundled",
+          "value": "true"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:npm/%40codetruss/analyzer-engine@0.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/%40codetruss/cli@0.2.13",
+      "dependsOn": [
+        "pkg:npm/%40codetruss/analyzer-engine@0.1.0",
+        "pkg:npm/minimatch@10.2.5",
+        "pkg:npm/yaml@2.9.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/balanced-match@4.0.4",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/brace-expansion@5.0.7",
+      "dependsOn": [
+        "pkg:npm/balanced-match@4.0.4"
+      ]
+    },
+    {
+      "ref": "pkg:npm/minimatch@10.2.5",
+      "dependsOn": [
+        "pkg:npm/brace-expansion@5.0.7"
+      ]
+    },
+    {
+      "ref": "pkg:npm/yaml@2.9.0",
+      "dependsOn": []
+    }
+  ]
+}

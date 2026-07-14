@@ -2,6 +2,20 @@ import type { AnalyzerFinding, AnalyzerPass, RepoIndex, Scores } from '@codetrus
 
 export type Verdict = 'PASS' | 'REVIEW_REQUIRED' | 'FAILED'
 export type ScopeClassification = 'allowed' | 'denied' | 'unexpected'
+export const LLM_PROVIDERS = ['anthropic', 'openai', 'claude'] as const
+export type LlmProvider = typeof LLM_PROVIDERS[number]
+/** `codex` remains readable so pre-0.2 repository config does not break deterministic commands. */
+export const CONFIG_LLM_PROVIDERS = [...LLM_PROVIDERS, 'codex'] as const
+export type ConfiguredLlmProvider = typeof CONFIG_LLM_PROVIDERS[number]
+export const MAX_LLM_DIFF_BYTES = 2_000_000
+
+/** Honest local-analysis contract: registry passes run locally; hosted-only passes and scores do not. */
+export const LOCAL_ANALYSIS_PROFILE = {
+  id: 'local-registry-v1',
+  omittedPasses: ['graph', 'sast'],
+  scoreStatus: 'not-computed',
+} as const
+export type LocalAnalysisProfile = typeof LOCAL_ANALYSIS_PROFILE
 
 export interface CliConfig {
   version: 1
@@ -10,7 +24,7 @@ export interface CliConfig {
   verify: string[]
   receipts: { dir: string }
   llm: {
-    provider?: 'anthropic' | 'openai' | 'claude' | 'codex'
+    provider?: ConfiguredLlmProvider
     model?: string
     maxDiffBytes: number
   }
@@ -46,10 +60,39 @@ export interface LlmReview {
   provider: string
   model?: string
   transmittedBytes: number
+  /** Optional only so receipts issued before this coverage field was introduced remain verifiable. */
+  diffCoverage?: {
+    totalBytes: number
+    reviewedBytes: number
+    truncated: boolean
+  }
   verdict: 'clean' | 'review'
   summary: string
   findings: string[]
 }
+
+interface AnalyzerReceiptEvidence {
+  passes: AnalyzerPass[]
+  /** Only findings introduced or worsened between the reviewed snapshots. */
+  findings: AnalyzerFinding[]
+  delta?: { introduced: number; worsened: number; recurring: number; resolved: number }
+  index: Pick<RepoIndex, 'totalLoc' | 'languages' | 'primaryLanguage'>
+}
+
+export type AnalyzerReceipt = AnalyzerReceiptEvidence & (
+  | {
+      /** Current local receipts never infer hosted Health scores from an incomplete pass set. */
+      analysisProfile: LocalAnalysisProfile
+      scores?: never
+      baselineScores?: never
+    }
+  | {
+      /** Compatibility shape for signed receipt-v1 files written by earlier CLI versions. */
+      analysisProfile?: never
+      scores: Scores
+      baselineScores?: Scores
+    }
+)
 
 export interface Receipt {
   receiptVersion: 1
@@ -72,15 +115,7 @@ export interface Receipt {
   scope: { allow: string[]; deny: string[] }
   files: ChangedFile[]
   diff: { sha256: string; bytes: number; totalBytes?: number; truncated: boolean }
-  analyzers: {
-    passes: AnalyzerPass[]
-    /** Only findings introduced or worsened between the reviewed snapshots. */
-    findings: AnalyzerFinding[]
-    scores: Scores
-    baselineScores?: Scores
-    delta?: { introduced: number; worsened: number; recurring: number; resolved: number }
-    index: Pick<RepoIndex, 'totalLoc' | 'languages' | 'primaryLanguage'>
-  }
+  analyzers: AnalyzerReceipt
   verifications: VerificationResult[]
   llm?: LlmReview
   coverageNotes: string[]
