@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing attested GitHub release tag, for example v0.2.13
+        description: Existing attested GitHub release tag, for example v0.2.14
         required: true
         type: string
       confirm_publish:

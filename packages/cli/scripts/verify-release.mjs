@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { assertReleasePackagePolicy } from './release-package-policy.mjs'
+import { cycloneDxSerialNumber } from './generate-sbom.mjs'
 import { verifyDeterministicPackageArchive } from './verify-deterministic-package.mjs'
 
 const scriptPath = fileURLToPath(import.meta.url)
@@ -93,6 +94,12 @@ export async function verifyRelease({
   const packagedSbom = JSON.parse(sbom.toString('utf8'))
   if (packagedSbom.metadata?.component?.name !== pkg.name || packagedSbom.metadata?.component?.version !== pkg.version) {
     throw new Error(`${sbomName} does not identify ${pkg.name}@${pkg.version}`)
+  }
+  const expectedSerialNumber = cycloneDxSerialNumber(pkg.name, pkg.version)
+  if (packagedSbom.bomFormat !== 'CycloneDX'
+    || packagedSbom.specVersion !== '1.6'
+    || packagedSbom.serialNumber !== expectedSerialNumber) {
+    throw new Error(`${sbomName} does not have the canonical CycloneDX identity ${expectedSerialNumber}`)
   }
 
   return { version: pkg.version, sha256: archiveSha256 }

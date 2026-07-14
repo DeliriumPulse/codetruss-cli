@@ -3,7 +3,17 @@
 CodeTruss CLI follows semantic versioning. Release artifacts and their SHA-256
 checksums are published at <https://codetruss.com/downloads/codetruss-cli-latest.json>.
 
-## 0.2.13 — 2026-07-14
+## 0.2.14 — 2026-07-14
+
+- Give the deterministic CycloneDX SBOM a canonical UUIDv5 serial number and
+  enforce that identity in release verification, making the SBOM directly
+  compatible with GitHub artifact attestations without weakening reproducible
+  package bytes.
+- Retain the complete v0.2.13 Windows long-path and installer hardening in a new
+  immutable candidate after GitHub rejected the prior candidate's otherwise
+  valid SBOM because it did not carry a top-level serial number.
+
+## 0.2.13 — 2026-07-14 (unpublished)
 
 - Enable Git for Windows long-path support command-locally for every
   CodeTruss-owned Git process and generated hook entry point. Exact private
@@ -12,6 +22,9 @@ checksums are published at <https://codetruss.com/downloads/codetruss-cli-latest
 - Preserve the complete v0.2.12 SBOM, authentication-network-contract, hook,
   verifier-isolation, and local-evidence hardening in a new immutable release
   after the Windows compatibility matrix rejected the prior candidate.
+- Release publication retained this candidate without downloadable assets after
+  GitHub's SBOM attestation action required a top-level CycloneDX serial number.
+  v0.2.14 carries the deterministic identity fix.
 
 ## 0.2.12 — 2026-07-14 (unpublished)
 

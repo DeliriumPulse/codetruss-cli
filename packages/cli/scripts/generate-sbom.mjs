@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
@@ -6,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const packageDir = resolve(scriptDir, '..')
 const require = createRequire(import.meta.url)
+const UUID_URL_NAMESPACE = Buffer.from('6ba7b8119dad11d180b400c04fd430c8', 'hex')
 
 export function npmPurl(name, version) {
   const scoped = /^(@[^/]+)\/([^/]+)$/.exec(name)
@@ -13,6 +15,18 @@ export function npmPurl(name, version) {
     ? `${encodeURIComponent(scoped[1])}/${encodeURIComponent(scoped[2])}`
     : encodeURIComponent(name)
   return `pkg:npm/${packagePath}@${encodeURIComponent(version)}`
+}
+
+export function cycloneDxSerialNumber(name, version) {
+  const uuid = createHash('sha1')
+    .update(UUID_URL_NAMESPACE)
+    .update(`${name}@${version}`, 'utf8')
+    .digest()
+    .subarray(0, 16)
+  uuid[6] = (uuid[6] & 0x0f) | 0x50
+  uuid[8] = (uuid[8] & 0x3f) | 0x80
+  const hex = uuid.toString('hex')
+  return `urn:uuid:${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 function licenseEntry(value) {
@@ -80,6 +94,7 @@ export async function generateSbom() {
   const bom = {
     $schema: 'https://cyclonedx.org/schema/bom-1.6.schema.json',
     bomFormat: 'CycloneDX',
+    serialNumber: cycloneDxSerialNumber(cli.name, cli.version),
     specVersion: '1.6',
     version: 1,
     metadata: {
