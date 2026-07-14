@@ -11,8 +11,18 @@ a signed `PASS`, `REVIEW_REQUIRED`, or `FAILED` receipt before a pull request.
 
 ## Quickstart
 
+macOS or Linux:
+
 ```bash
 curl -fsSL https://codetruss.com/install.sh | sh
+codetruss review --task "Review my current agent changes"
+codetruss verify latest
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://codetruss.com/install.ps1 | iex
 codetruss review --task "Review my current agent changes"
 codetruss verify latest
 ```
