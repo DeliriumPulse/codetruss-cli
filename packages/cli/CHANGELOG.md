@@ -5,7 +5,13 @@ checksums are published at <https://codetruss.com/downloads/codetruss-cli-latest
 
 ## Unreleased
 
-## 0.2.22 — 2026-07-14
+## 0.2.23 — 2026-07-14
+
+- Ship the guided setup, local evidence privacy, invocation provenance,
+  aggregate metrics, reproducible packaging, and Windows setup corrections
+  accumulated in the unpublished 0.2.15 through 0.2.22 candidates.
+
+## 0.2.22 — 2026-07-14 (unpublished)
 
 - Resolve Windows package-manager shims through shell-free PATH/PATHEXT
   inspection before the first public release of the guided setup changes.
