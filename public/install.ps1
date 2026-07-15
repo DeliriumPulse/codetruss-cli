@@ -71,9 +71,9 @@ try {
 
 $Command = Get-Command codetruss -ErrorAction SilentlyContinue
 if (-not $Command) {
-  Write-Host "CodeTruss installed. Restart this shell so npm's global bin directory is on PATH."
+  Write-Host "CodeTruss installed. Restart this shell so npm's global bin directory is on PATH, then run inside your Git repository: codetruss setup"
   exit 0
 }
 
 & codetruss --version
-Write-Host "Ready. Run: codetruss init"
+Write-Host "Ready. Run inside your Git repository: codetruss setup"

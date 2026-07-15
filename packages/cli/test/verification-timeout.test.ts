@@ -18,7 +18,8 @@ afterEach(async () => {
 describe('verification command lifecycle', () => {
   it('fair-shares one internal deadline while preserving the per-command cap', () => {
     expect(allocatedVerificationTimeout(210_000, 30_000, 2)).toBe(90_000)
-    expect(allocatedVerificationTimeout(210_000, 30_000, 1)).toBe(120_000)
+    expect(allocatedVerificationTimeout(210_000, 30_000, 1)).toBe(180_000)
+    expect(allocatedVerificationTimeout(600_000, 0, 1)).toBe(300_000)
     expect(allocatedVerificationTimeout(210_000, 210_001, 3)).toBe(0)
     expect(() => allocatedVerificationTimeout(210_000, 30_000, 0)).toThrow(/positive integer/)
   })

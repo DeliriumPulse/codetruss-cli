@@ -15,10 +15,18 @@ an agent makes a real change. With no allow policy, changed files are deliberate
 Then configure repeat runs, automatic hooks, and a wrapped agent command:
 
 ```bash
-codetruss init --allow "src/**" --allow "tests/**" --deny "infra/production/**"
-codetruss hooks install all
+codetruss setup
 codetruss run --task "Fix auth" --allow "src/auth/**" --verify "pnpm test" -- codex exec "Fix auth"
 ```
+
+`codetruss setup` proposes conventional source roots, shows every detected
+verification command and its exact fingerprint before trust, installs the
+pre-commit plus Claude/Codex hooks, and runs a health check. It never defaults
+to a repository-wide allow rule, never treats `--yes` as command trust, and
+never uploads anything. Codex asks for one final project-hook approval in
+`/hooks`.
+Non-interactive `--yes` setup requires explicit `--allow` values and still
+requires `--trust-verify` before it can trust detected repository commands.
 
 A 14-day local-only design-partner cohort is open without repository access,
 an account, or receipt sync. The consent request is:
@@ -40,7 +48,7 @@ dependencies. The shell installers resolve a versioned artifact and verify its
 published SHA-256 digest before installation. Every release also includes a
 deterministic CycloneDX SBOM, changelog, and security policy.
 
-Deterministic `run`, `review`, `report`, `list`, `init`, `verify`, and hook
+Deterministic `run`, `review`, `report`, `list`, `metrics`, `init`, `verify`, and hook
 checks run on-machine without contacting CodeTruss. Installation fetches release
 metadata and package bytes from CodeTruss. `auth login` contacts CodeTruss
 device/session endpoints but uploads no source, patch, or receipt. `auth status`
@@ -58,6 +66,16 @@ Provider review never crosses CodeTruss servers. `sync` is the only command that
 uploads to CodeTruss, and it sends a redacted receipt without the patch, absolute
 repository path, agent arguments/start errors, or verification commands/output.
 There is no background usage telemetry, receipt upload, or synchronization.
+`codetruss metrics --json` verifies the local signed receipts and emits only
+aggregate first/last UTC dates, active UTC day count, verdict, invocation,
+agent-surface, D7 receipt-pattern, and hook-health fields.
+It includes no repository, task, file, finding, verification command, diff, or
+signing-key data and makes no network request. Receipts from older releases are
+counted under `legacy_unknown` invocation provenance.
+The `pre_commit` label is explicitly `self_attested`; it is useful for local
+breakdowns but is not counted as authenticated agent-hook evidence. Claude and
+Codex Stop receipts bind `agent_hook` plus `hook_context` provenance to the
+private prompt-time hook context.
 
 `codetruss auth login` opens a short-lived browser confirmation, lets you
 choose the destination organization, and saves a 90-day `receipts:read` +

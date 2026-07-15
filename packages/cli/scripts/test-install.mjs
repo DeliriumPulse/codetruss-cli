@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
 
@@ -87,12 +87,17 @@ try {
     : join(prefix, 'bin', 'codetruss')
   const version = run(executable, ['--version']).trim()
   if (version !== expectedVersion) throw new Error(`unexpected version output: expected ${expectedVersion}, received ${version}`)
+  const installedBin = process.platform === 'win32' ? prefix : join(prefix, 'bin')
+  const installedEnvironment = { PATH: `${installedBin}${delimiter}${process.env.PATH ?? ''}` }
 
   const shellInstaller = await readFile(join(repoRoot, 'public', 'install.sh'), 'utf8')
   const powershellInstaller = await readFile(join(repoRoot, 'public', 'install.ps1'), 'utf8')
   const hardenedInstall = 'npm install --global --ignore-scripts --no-audit --no-fund'
   if (!shellInstaller.includes(hardenedInstall) || !powershellInstaller.includes(hardenedInstall)) {
     throw new Error('installers must disable package lifecycle scripts, audit requests, and funding prompts')
+  }
+  if (!shellInstaller.includes('codetruss setup') || !powershellInstaller.includes('codetruss setup')) {
+    throw new Error('installers must direct developers to the guided setup command')
   }
   if (
     !powershellInstaller.includes('[System.Security.Cryptography.SHA256]::Create()')
@@ -104,13 +109,19 @@ try {
   run('git', ['init', '--quiet', repo])
   run('git', ['-C', repo, 'config', 'user.name', 'CodeTruss Install Test'])
   run('git', ['-C', repo, 'config', 'user.email', 'install-test@codetruss.local'])
-  run(executable, ['init', '--allow', 'src/**'], { cwd: repo })
+  run(executable, ['setup', '--yes', '--allow', 'src/**', '--hooks', 'all'], {
+    cwd: repo,
+    env: installedEnvironment,
+  })
   const configPath = join(repo, '.codetruss.yml')
   const initializedConfig = await readFile(configPath, 'utf8')
   if (!/allow:\s*\n\s+- src\/\*\*/m.test(initializedConfig)) {
-    throw new Error('init did not persist the explicit allow policy required by agent hooks')
+    throw new Error('setup did not persist the explicit allow policy required by agent hooks')
   }
-  run(executable, ['hooks', 'install', 'all'], { cwd: repo })
+  const ignoredEvidence = run('git', ['-C', repo, 'check-ignore', '.codetruss/receipts/probe.json']).trim()
+  if (ignoredEvidence !== '.codetruss/receipts/probe.json') {
+    throw new Error('setup did not protect local evidence through the repository-local Git exclude')
+  }
   const preCommit = await readFile(join(repo, '.git', 'hooks', 'pre-commit'), 'utf8')
   const claude = await readFile(join(repo, '.claude', 'settings.json'), 'utf8')
   const codex = await readFile(join(repo, '.codex', 'hooks.json'), 'utf8')
@@ -127,7 +138,7 @@ try {
   if (process.platform !== 'win32') {
     run(join(repo, '.git', 'hooks', 'pre-commit'), [], {
       cwd: repo,
-      env: { PATH: `${join(prefix, 'bin')}:${process.env.PATH ?? ''}` },
+      env: installedEnvironment,
     })
     run('sh', [join(repoRoot, 'public', 'install.sh')], {
       exitCode: 1,
@@ -150,7 +161,7 @@ try {
       throw new Error(`Windows installer failed for the wrong reason:\n${rejectedInstall}`)
     }
   }
-  process.stdout.write(`Installed ${version} from ${archive}, initialized a clean repository, and exercised all hook installers.\n`)
+  process.stdout.write(`Installed ${version} from ${archive}, completed guided setup in a clean repository, and exercised all hook installers.\n`)
 } finally {
   releaseServer?.kill('SIGTERM')
   await rm(scratch, { recursive: true, force: true })

@@ -4,6 +4,7 @@ import { access, chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'no
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { loadConfig } from './config.js'
 import { runGitText } from './git-process.js'
+import { verifyCommandTrustStatus } from './verify-trust.js'
 
 type HookHandler = { type?: string; command?: string; args?: string[]; [key: string]: unknown }
 type HookGroup = { matcher?: string; hooks?: HookHandler[]; [key: string]: unknown }
@@ -12,7 +13,7 @@ type HookTarget = 'pre-commit' | 'claude' | 'codex'
 
 export interface HookDoctorCheck {
   level: 'ok' | 'warning' | 'error'
-  target: HookTarget | 'config' | 'runtime'
+  target: HookTarget | 'config' | 'runtime' | 'agent-runtime'
   message: string
   path?: string
 }
@@ -20,6 +21,14 @@ export interface HookDoctorCheck {
 export interface HookDoctorResult {
   ok: boolean
   checks: HookDoctorCheck[]
+}
+
+export type HookHealthStatus = 'not_installed' | 'healthy' | 'warning' | 'unhealthy'
+
+export interface LocalHookHealth {
+  preCommit: HookHealthStatus
+  claude: HookHealthStatus
+  codex: HookHealthStatus
 }
 
 interface PlannedWrite {
@@ -42,6 +51,8 @@ interface HookInstallPlan {
 }
 
 const MARKER = 'codetruss-agent-guard'
+export const CODETRUSS_PRE_COMMIT_ENV = 'CODETRUSS_INTERNAL_PRE_COMMIT'
+const SUPPORTS_POSIX_FILE_MODES = process.platform !== 'win32'
 const BEGIN_MARKER = `# ${MARKER}:begin`
 const END_MARKER = `# ${MARKER}:end`
 const AGENT_EVENTS = ['UserPromptSubmit', 'PostToolUse', 'Stop'] as const
@@ -374,9 +385,9 @@ function preCommitBlock(): string {
 ROOT="$(git -c core.longpaths=true rev-parse --show-toplevel 2>/dev/null)" || exit 0
 CODETRUSS_STATUS=0
 if [ -x "$ROOT/node_modules/.bin/codetruss" ]; then
-  "$ROOT/node_modules/.bin/codetruss" review --staged --task "pre-commit" || CODETRUSS_STATUS=$?
+  ${CODETRUSS_PRE_COMMIT_ENV}=1 "$ROOT/node_modules/.bin/codetruss" review --staged --task "pre-commit" || CODETRUSS_STATUS=$?
 else
-  codetruss review --staged --task "pre-commit" || CODETRUSS_STATUS=$?
+  ${CODETRUSS_PRE_COMMIT_ENV}=1 codetruss review --staged --task "pre-commit" || CODETRUSS_STATUS=$?
 fi
 case "$CODETRUSS_STATUS" in
   0) ;;
@@ -412,7 +423,9 @@ async function planPreCommit(root: string): Promise<HookInstallPlan> {
   } else {
     existing = '#!/bin/sh\n'
   }
-  if (!existing.endsWith('\n')) existing += '\n'
+  // Normalize only the separator we own. This preserves user hook bytes while
+  // making repeated installation byte-for-byte idempotent.
+  existing = `${existing.replace(/(?:\r?\n)+$/g, '')}\n`
   existing += `\n${preCommitBlock()}\n`
   return {
     writes: [plannedWrite(path, existing, 0o755, 0o755)],
@@ -426,17 +439,25 @@ function parseTargets(target: string): HookTarget[] {
   return target === 'all' ? ['pre-commit', 'claude', 'codex'] : [target as HookTarget]
 }
 
-async function assertAgentScopeConfigured(root: string, targets: HookTarget[]): Promise<void> {
-  if (!targets.some((target) => target === 'claude' || target === 'codex')) return
+async function assertHookPolicyReady(root: string, targets: HookTarget[]): Promise<void> {
   const config = await loadConfig(root)
-  if (config.allow.length === 0) {
+  if (targets.some((target) => target === 'claude' || target === 'codex') && config.allow.length === 0) {
     throw new Error('agent hooks require at least one allow glob in .codetruss.yml; run codetruss init, define the intended task surface, then install again')
+  }
+  if (config.verify.length) {
+    const trust = await verifyCommandTrustStatus(root, config.verify)
+    if (!trust.trusted) {
+      throw new Error(`hooks require trusted repository verification commands (${trust.hash.slice(0, 12)}); inspect them and run codetruss verify-policy trust`)
+    }
   }
 }
 
 export async function installHooks(root: string, target: string): Promise<void> {
   const targets = parseTargets(target)
-  await assertAgentScopeConfigured(root, targets)
+  await assertHookPolicyReady(root, targets)
+  if (!await executablePath(root)) {
+    throw new Error('automatic hooks require a persistent CodeTruss CLI installed in this repository or on PATH')
+  }
   // Build and validate every mutation before publishing any one of them. This
   // keeps `all` from leaving a half-installed hook set when a later user-owned
   // JSON file is malformed or unwritable.
@@ -565,7 +586,7 @@ async function inspectAgentHook(
   }
   try {
     const metadata = await lstat(path)
-    if ((metadata.mode & 0o022) !== 0) {
+    if (SUPPORTS_POSIX_FILE_MODES && (metadata.mode & 0o022) !== 0) {
       add({ level: 'error', target: surface, message: 'hook configuration is writable by group or other users', path })
     }
   } catch (error) {
@@ -580,18 +601,25 @@ async function inspectRunner(root: string, add: (check: HookDoctorCheck) => void
   try {
     const [contents, metadata] = await Promise.all([readFile(path, 'utf8'), lstat(path)])
     if (!metadata.isFile()) {
-      add({ level: 'error', target: 'runtime', message: 'agent hook runner is not a regular file', path })
+      add({ level: 'error', target: 'agent-runtime', message: 'agent hook runner is not a regular file', path })
     } else if (contents !== AGENT_RUNNER) {
-      add({ level: 'error', target: 'runtime', message: 'agent hook runner differs from this CLI version; reinstall hooks', path })
-    } else if ((metadata.mode & 0o022) !== 0) {
-      add({ level: 'error', target: 'runtime', message: 'agent hook runner is writable by group or other users', path })
+      add({ level: 'error', target: 'agent-runtime', message: 'agent hook runner differs from this CLI version; reinstall hooks', path })
+    } else if (SUPPORTS_POSIX_FILE_MODES && (metadata.mode & 0o022) !== 0) {
+      add({ level: 'error', target: 'agent-runtime', message: 'agent hook runner is writable by group or other users', path })
     } else {
-      add({ level: 'ok', target: 'runtime', message: 'agent hook runner is current and owner-controlled', path })
+      add({
+        level: 'ok',
+        target: 'agent-runtime',
+        message: SUPPORTS_POSIX_FILE_MODES
+          ? 'agent hook runner is current and owner-controlled'
+          : 'agent hook runner is current; POSIX permission checks do not apply on Windows',
+        path,
+      })
     }
   } catch (error) {
     add({
       level: 'error',
-      target: 'runtime',
+      target: 'agent-runtime',
       message: (error as NodeJS.ErrnoException).code === 'ENOENT'
         ? 'agent hook runner is missing; reinstall hooks'
         : error instanceof Error ? error.message : String(error),
@@ -613,7 +641,9 @@ async function inspectPreCommit(root: string, add: (check: HookDoctorCheck) => v
     } else {
       add({ level: 'ok', target: 'pre-commit', message: 'staged-review block is current', path })
     }
-    if ((metadata.mode & 0o100) === 0) {
+    if (!SUPPORTS_POSIX_FILE_MODES) {
+      add({ level: 'ok', target: 'pre-commit', message: 'hook file is present; POSIX permission checks do not apply on Windows', path })
+    } else if ((metadata.mode & 0o100) === 0) {
       add({ level: 'error', target: 'pre-commit', message: 'hook is not executable by its owner', path })
     } else if ((metadata.mode & 0o022) !== 0) {
       add({ level: 'error', target: 'pre-commit', message: 'hook is writable by group or other users', path })
@@ -632,11 +662,27 @@ async function inspectPreCommit(root: string, add: (check: HookDoctorCheck) => v
   }
 }
 
-export async function doctorHooks(root: string, target: string): Promise<HookDoctorResult> {
+export async function inspectHookDoctor(root: string, target: string): Promise<HookDoctorResult> {
   const targets = parseTargets(target)
   const checks: HookDoctorCheck[] = []
   const add = (check: HookDoctorCheck) => checks.push(check)
   const agentTargets = targets.filter((name): name is 'claude' | 'codex' => name !== 'pre-commit')
+  try {
+    const config = await loadConfig(root)
+    if (config.verify.length) {
+      const trust = await verifyCommandTrustStatus(root, config.verify)
+      add({
+        level: trust.trusted ? 'ok' : 'error',
+        target: 'config',
+        message: trust.trusted
+          ? `repository verification commands are trusted (${trust.hash.slice(0, 12)})`
+          : `repository verification commands are untrusted (${trust.hash.slice(0, 12)}); inspect them and run codetruss verify-policy trust`,
+        path: join(root, '.codetruss.yml'),
+      })
+    }
+  } catch (error) {
+    add({ level: 'error', target: 'config', message: error instanceof Error ? error.message : String(error), path: join(root, '.codetruss.yml') })
+  }
   if (agentTargets.length) {
     try {
       const config = await loadConfig(root)
@@ -667,13 +713,57 @@ export async function doctorHooks(root: string, target: string): Promise<HookDoc
       }
     }
   }
-  for (const check of checks) {
+  const errors = checks.filter((check) => check.level === 'error').length
+  return { ok: errors === 0, checks }
+}
+
+async function hookInstallations(root: string): Promise<Record<HookTarget, boolean>> {
+  const agentPresent = async (surface: 'claude' | 'codex'): Promise<boolean> => {
+    const path = join(root, surface === 'claude' ? '.claude/settings.json' : '.codex/hooks.json')
+    return readFile(path, 'utf8').then((text) => text.includes('.codetruss/hooks/agent.cjs'), () => false)
+  }
+  return {
+    'pre-commit': await readFile(effectivePreCommitPath(root), 'utf8')
+      .then((text) => text.includes(BEGIN_MARKER), () => false),
+    claude: await agentPresent('claude'),
+    codex: await agentPresent('codex'),
+  }
+}
+
+/** Privacy-safe health summary: no hook path, command, or diagnostic text leaves this function. */
+export async function inspectLocalHookHealth(root: string): Promise<LocalHookHealth> {
+  const [installed, doctor] = await Promise.all([
+    hookInstallations(root),
+    inspectHookDoctor(root, 'all'),
+  ])
+  const status = (target: HookTarget): HookHealthStatus => {
+    if (!installed[target]) return 'not_installed'
+    const relevant = doctor.checks.filter((check) => (
+      check.target === target
+      || check.target === 'runtime'
+      || (target !== 'pre-commit' && check.target === 'agent-runtime')
+      || (target !== 'pre-commit' && check.target === 'config')
+    ))
+    if (relevant.some((check) => check.level === 'error')) return 'unhealthy'
+    if (relevant.some((check) => check.level === 'warning')) return 'warning'
+    return 'healthy'
+  }
+  return {
+    preCommit: status('pre-commit'),
+    claude: status('claude'),
+    codex: status('codex'),
+  }
+}
+
+export async function doctorHooks(root: string, target: string): Promise<HookDoctorResult> {
+  const result = await inspectHookDoctor(root, target)
+  for (const check of result.checks) {
     process.stdout.write(`${check.level.toUpperCase()}\t${check.target}\t${check.message}${check.path ? `\t${check.path}` : ''}\n`)
   }
-  const errors = checks.filter((check) => check.level === 'error').length
-  const warnings = checks.filter((check) => check.level === 'warning').length
-  process.stdout.write(`doctor\t${errors === 0 ? 'healthy' : 'unhealthy'}\t${errors} error(s), ${warnings} warning(s)\n`)
-  return { ok: errors === 0, checks }
+  const errors = result.checks.filter((check) => check.level === 'error').length
+  const warnings = result.checks.filter((check) => check.level === 'warning').length
+  process.stdout.write(`doctor\t${result.ok ? 'healthy' : 'unhealthy'}\t${errors} error(s), ${warnings} warning(s)\n`)
+  return result
 }
 
 export async function hookStatus(root: string, target: string): Promise<void> {

@@ -97,6 +97,14 @@ describe('signed receipts', () => {
     expect(renderMarkdown(receipt)).toContain('Reviewed 200000/240000 diff bytes (truncated; PASS prohibited).')
   })
 
+  it('keeps receipt-v1 Markdown byte-compatible when signed JSON adds invocation provenance', () => {
+    const current = fixture('/tmp/repo')
+    current.invocation = { kind: 'agent_hook', provenance: 'hook_context', surface: 'codex', cliVersion: '0.2.14' }
+    const preProvenance = structuredClone(current)
+    delete preProvenance.invocation
+    expect(renderMarkdown(current)).toBe(renderMarkdown(preProvenance))
+  })
+
   it('rejects a forged receipt signed by a substituted embedded key', async () => {
     const root = await mkdtemp(join(tmpdir(), 'codetruss-receipt-forgery-'))
     const dir = join(root, 'receipts')
@@ -124,6 +132,7 @@ describe('signed receipts', () => {
     const dir = join(root, 'receipts')
     process.env.CODETRUSS_SIGNING_KEY = join(root, 'signing.pem')
     const receipt = fixture(root, 'private patch')
+    receipt.invocation = { kind: 'agent_hook', provenance: 'hook_context', surface: 'claude', cliVersion: '0.2.14' }
     receipt.startDirty = true
     receipt.startDirtyFiles = ['src/changed.ts', 'notes/private-plan.md']
     receipt.files = [{
@@ -159,6 +168,7 @@ describe('signed receipts', () => {
     expect(synced.repoRoot).toBe(basename(root))
     expect(synced.startDirtyFiles).toEqual(['src/changed.ts'])
     expect(synced.policy).toEqual({ sha256: 'c'.repeat(64) })
+    expect(synced.invocation).toEqual({ kind: 'agent_hook', provenance: 'hook_context', surface: 'claude', cliVersion: '0.2.14' })
     expect(synced.agent?.command).toEqual(['codex'])
     expect(synced.verifications[0].command).toBe('[redacted for sync]')
     expect(synced.verifications[0].output).toBe('')

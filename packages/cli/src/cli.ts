@@ -22,14 +22,16 @@ import {
   CODETRUSS_HOOK_BASELINE_DIRTY_FILES_SHA256_ENV,
   CODETRUSS_HOOK_CONTEXT_PATH_ENV,
   CODETRUSS_HOOK_CONTEXT_SHA256_ENV,
+  CODETRUSS_HOOK_SURFACE_ENV,
   dispatchAgentHook,
   readHookTurnContext,
   type AgentHookSurface,
 } from './hook-runtime.js'
-import { doctorHooks, hookStatus, installHooks, uninstallHooks } from './hooks.js'
+import { CODETRUSS_PRE_COMMIT_ENV, doctorHooks, hookStatus, inspectLocalHookHealth, installHooks, uninstallHooks } from './hooks.js'
 import { hostedAuthStatus, loginHosted, logoutHosted } from './hosted-auth.js'
 import { parseInternalHookResultRequest, writeInternalHookResult } from './hook-result.js'
 import { reviewWithLlm } from './llm.js'
+import { collectLocalMetrics, renderLocalMetrics } from './metrics.js'
 import { classifyPath, isDependencyFile, sensitiveCategory } from './policy.js'
 import { policyFingerprint } from './policy-fingerprint.js'
 import {
@@ -46,6 +48,8 @@ import { runGitText } from './git-process.js'
 import { LLM_PROVIDERS, type CliConfig, type Receipt, type ReviewOptions } from './types.js'
 import { revokeVerifyCommands, trustVerifyCommands, verifyCommandTrustStatus } from './verify-trust.js'
 import { CLI_VERSION } from './version.js'
+import { assertLocalEvidencePathsIgnored, ensureLocalEvidenceProtected } from './local-evidence.js'
+import { guidedSetup } from './setup.js'
 
 interface Parsed { command: string; positionals: string[]; values: Map<string, string[]>; booleans: Set<string>; agent: string[] }
 
@@ -60,6 +64,7 @@ interface EvidenceTarget {
 
 interface HookEvidence {
   config: CliConfig
+  surface: AgentHookSurface
   task: string
   startedAt: Date
   contextPath: string
@@ -77,7 +82,7 @@ function parse(argv: string[]): Parsed {
   const positionals: string[] = []
   const values = new Map<string, string[]>()
   const booleans = new Set<string>()
-  const booleanNames = new Set(['llm', 'staged', 'json', 'force', 'help', 'no-verify', 'dry-run'])
+  const booleanNames = new Set(['llm', 'staged', 'json', 'force', 'help', 'no-verify', 'dry-run', 'yes', 'trust-verify'])
   for (let i = 0; i < before.length; i++) {
     const item = before[i]
     if (!item.startsWith('--')) { positionals.push(item); continue }
@@ -153,6 +158,14 @@ async function loadHookEvidence(root: string, baseline: string, final: string): 
   const expectedContextPath = await realpath(resolve(dirname(objectStore.directory), 'turn-context.json'))
   if (contextPath !== expectedContextPath) throw new Error('CodeTruss hook context is outside its private turn state')
   const context = await readHookTurnContext(contextPath, requiredEnvironment(CODETRUSS_HOOK_CONTEXT_SHA256_ENV))
+  const environmentSurface = process.env[CODETRUSS_HOOK_SURFACE_ENV]
+  const surface = context.surface ?? environmentSurface
+  if (surface !== 'claude' && surface !== 'codex') {
+    throw new Error('CodeTruss hook evidence is missing its agent surface')
+  }
+  if (context.surface && environmentSurface && context.surface !== environmentSurface) {
+    throw new Error('CodeTruss hook surface does not match its authenticated prompt-time context')
+  }
   const expectedDirtyHash = requiredEnvironment(CODETRUSS_HOOK_BASELINE_DIRTY_FILES_SHA256_ENV)
   if (!/^[0-9a-f]{64}$/.test(expectedDirtyHash)
     || sha256(JSON.stringify(context.baselineDirtyFiles)) !== expectedDirtyHash) {
@@ -171,6 +184,7 @@ async function loadHookEvidence(root: string, baseline: string, final: string): 
 
   return {
     config: context.config,
+    surface,
     task: context.task,
     startedAt: validatedHookStartedAt(),
     contextPath,
@@ -237,6 +251,8 @@ Usage:
   codetruss review [--staged] --task "..." [--allow GLOB] [--deny GLOB] [--verify CMD] [--no-verify] [--llm] [--provider anthropic|openai|claude]
   codetruss report [id|latest] [--json]
   codetruss list [--json]
+  codetruss metrics [--json]
+  codetruss setup [--allow GLOB] [--deny GLOB] [--hooks all|pre-commit|claude|codex|none] [--trust-verify] [--yes]
   codetruss init [--allow GLOB] [--deny GLOB] [--force]
   codetruss verify [id|latest]
   codetruss sync [id|latest] [--dry-run]
@@ -248,6 +264,7 @@ Exit codes: PASS=0, REVIEW_REQUIRED=1, FAILED=2, usage/environment=3.`
 }
 
 async function executeReview(parsed: Parsed, root: string, liveConfig: CliConfig): Promise<number> {
+  await ensureLocalEvidenceProtected(root)
   const mode = parsed.command as 'run' | 'review'
   const hookBase = one(parsed, 'base')
   const hookFinal = one(parsed, 'final')
@@ -330,6 +347,9 @@ async function executeReview(parsed: Parsed, root: string, liveConfig: CliConfig
         process.stderr.write(`codetruss: starting at ${baseline.head || '(unborn branch)'}\n`)
         const result = await runAgent(options.agentCommand!, root)
         agent = { command: options.agentCommand!, ...result }
+        // The wrapped process is allowed to modify the repository, so repeat
+        // the privacy gate before writing any post-agent snapshot or receipt.
+        await ensureLocalEvidenceProtected(root)
         const final = await createExactSnapshotCommit(root, snapshotParent, objectStore)
         target = {
           baselineTreeish: baseline.commit,
@@ -475,7 +495,15 @@ async function executeReview(parsed: Parsed, root: string, liveConfig: CliConfig
       : newSessionId(startedAt)
     const receipt: Receipt = {
       receiptVersion: 1, sessionId, createdAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(), durationMs,
-      mode, task, repoRoot: root, startCommit: immutableTarget.startCommit, endCommit: immutableTarget.endCommit,
+      mode,
+      invocation: hookEvidence
+        ? { kind: 'agent_hook', provenance: 'hook_context', surface: hookEvidence.surface, cliVersion: CLI_VERSION }
+        : mode === 'run'
+          ? { kind: 'manual_run', provenance: 'direct', cliVersion: CLI_VERSION }
+          : process.env[CODETRUSS_PRE_COMMIT_ENV] === '1' && options.staged
+            ? { kind: 'pre_commit', provenance: 'self_attested', cliVersion: CLI_VERSION }
+            : { kind: 'manual_review', provenance: 'direct', cliVersion: CLI_VERSION },
+      task, repoRoot: root, startCommit: immutableTarget.startCommit, endCommit: immutableTarget.endCommit,
       git: { baselineTree: baselineSnapshot.tree, finalTree: finalSnapshot.tree },
       policy: { sha256: policyFingerprint(options, config) },
       startDirty, startDirtyFiles, agent,
@@ -513,6 +541,9 @@ async function executeReview(parsed: Parsed, root: string, liveConfig: CliConfig
     }
     const outputDirectory = receiptDir(root, config)
     const showFirstReceiptNextSteps = !hookEvidence && files.length > 0 && (await receiptIds(outputDirectory)).length === 0
+    assertLocalEvidencePathsIgnored(root, ['json', 'md', 'patch', 'sig'].map((extension) => (
+      join(outputDirectory, `${receipt.sessionId}.${extension}`)
+    )))
     const paths = await writeReceipt(outputDirectory, receipt, diff.patch)
     if (hookResultRequest) {
       await writeInternalHookResult(
@@ -528,12 +559,24 @@ async function executeReview(parsed: Parsed, root: string, liveConfig: CliConfig
     process.stdout.write(`${receipt.verdict} ${receipt.sessionId}\n${paths.markdown}\n`)
     for (const reason of receipt.reasons) process.stdout.write(`- ${reason}\n`)
     if (showFirstReceiptNextSteps) {
+      const verdictHelp = receipt.verdict === 'PASS'
+        ? 'PASS exits 0.'
+        : receipt.verdict === 'REVIEW_REQUIRED'
+          ? 'REVIEW_REQUIRED exits 1 by design and is still valid evidence.'
+          : 'FAILED exits 2 and should be resolved before the change proceeds.'
+      let automationHelp = 'Automate future checks: codetruss setup'
+      if (config.allow.length > 0) {
+        const hookHealth = await inspectLocalHookHealth(root)
+        const hasInstalledHook = Object.values(hookHealth).some((status) => status !== 'not_installed')
+        automationHelp = hasInstalledHook
+          ? 'Check automatic hooks: codetruss hooks doctor all'
+          : 'Enable automatic checks: codetruss hooks install all'
+      }
       process.stdout.write([
         '',
-        'First signed receipt created. REVIEW_REQUIRED exits 1 by design and is still valid evidence.',
+        `First signed receipt created. ${verdictHelp}`,
         'Next: codetruss verify latest',
-        'Then: codetruss init --allow "<your-change-root>/**"',
-        'After policy: codetruss hooks install all',
+        automationHelp,
         'Optional design-partner cohort: https://codetruss.com/cli#design-partner',
         '',
       ].join('\n'))
@@ -595,10 +638,25 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     throw new Error('auth requires login, status, or logout')
   }
   const root = findRepoRoot()
-  const config = await loadConfig(root)
-  const dir = receiptDir(root, config)
-  if (parsed.command === 'run' || parsed.command === 'review') return executeReview(parsed, root, config)
+  if (parsed.command === 'setup') {
+    if (parsed.positionals.length || parsed.agent.length) throw new Error('setup does not accept positional arguments or a command after --')
+    const allowedValues = new Set(['allow', 'deny', 'hooks'])
+    const allowedBooleans = new Set(['yes', 'trust-verify'])
+    const unsupported = [
+      ...[...parsed.values.keys()].filter((name) => !allowedValues.has(name)).map((name) => `--${name}`),
+      ...[...parsed.booleans].filter((name) => !allowedBooleans.has(name)).map((name) => `--${name}`),
+    ]
+    if (unsupported.length) throw new Error(`setup does not accept ${unsupported.join(', ')}`)
+    return guidedSetup(root, {
+      allow: parsed.values.get('allow'),
+      deny: parsed.values.get('deny'),
+      hooks: one(parsed, 'hooks'),
+      trustVerify: parsed.booleans.has('trust-verify'),
+      yes: parsed.booleans.has('yes'),
+    })
+  }
   if (parsed.command === 'init') {
+    await ensureLocalEvidenceProtected(root)
     const allow = many(parsed, 'allow', [])
     const deny = many(parsed, 'deny', [])
     const path = await initialize(root, parsed.booleans.has('force'), { allow, deny })
@@ -611,6 +669,9 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     }
     return 0
   }
+  const config = await loadConfig(root)
+  const dir = receiptDir(root, config)
+  if (parsed.command === 'run' || parsed.command === 'review') return executeReview(parsed, root, config)
   if (parsed.command === 'report') {
     const receipt = await verifyReceipt(dir, parsed.positionals[0] ?? 'latest', config.signing.publicKey)
     process.stdout.write(parsed.booleans.has('json') ? `${JSON.stringify(receipt, null, 2)}\n` : renderMarkdown(receipt))
@@ -621,6 +682,11 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     const rows = await Promise.all(ids.map(async (id) => (await resolveReceipt(dir, id)).receipt))
     if (parsed.booleans.has('json')) process.stdout.write(`${JSON.stringify(rows.map((r) => ({ sessionId: r.sessionId, verdict: r.verdict, task: r.task, createdAt: r.createdAt })), null, 2)}\n`)
     else { process.stdout.write('VERDICT\tSESSION\tTASK\n'); for (const row of rows) process.stdout.write(`${row.verdict}\t${row.sessionId}\t${row.task.replaceAll('\n', ' ')}\n`) }
+    return 0
+  }
+  if (parsed.command === 'metrics') {
+    const metrics = await collectLocalMetrics(root, dir, config.signing.publicKey)
+    process.stdout.write(parsed.booleans.has('json') ? `${JSON.stringify(metrics, null, 2)}\n` : renderLocalMetrics(metrics))
     return 0
   }
   if (parsed.command === 'verify') { const receipt = await verifyReceipt(dir, parsed.positionals[0] ?? 'latest', config.signing.publicKey); process.stdout.write(`verified ${receipt.sessionId} (${receipt.verdict})\n`); return 0 }
@@ -668,12 +734,20 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
   if (parsed.command === 'hooks') {
     const action = parsed.positionals[0]
     const target = parsed.positionals[1] ?? 'all'
-    if (action === 'install') { await installHooks(root, target); return 0 }
+    if (action === 'install') {
+      await ensureLocalEvidenceProtected(root)
+      if (target === 'claude' || target === 'codex' || target === 'all') {
+        assertLocalEvidencePathsIgnored(root, [join(root, '.codetruss', 'hooks', 'agent.cjs')])
+      }
+      await installHooks(root, target)
+      return 0
+    }
     if (action === 'status') { await hookStatus(root, target); return 0 }
     if (action === 'doctor') return (await doctorHooks(root, target)).ok ? 0 : 1
     if (action === 'uninstall') { await uninstallHooks(root, target); return 0 }
     if (action === 'dispatch') {
       if (target !== 'claude' && target !== 'codex') throw new Error('hook dispatch requires claude or codex')
+      await ensureLocalEvidenceProtected(root)
       return dispatchAgentHook(root, target as AgentHookSurface, config)
     }
     throw new Error('hooks requires install, status, doctor, or uninstall')

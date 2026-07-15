@@ -18,6 +18,7 @@
     "validate": "pnpm typecheck && pnpm release:artifact && pnpm test && pnpm release:verify && pnpm test:install"
   },
   "devDependencies": {
-    "@codetruss/analyzer-engine": "workspace:*"
+    "@codetruss/analyzer-engine": "workspace:*",
+    "@codetruss/cli": "workspace:*"
   }
 }

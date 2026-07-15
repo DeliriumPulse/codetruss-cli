@@ -58,6 +58,7 @@ export function withoutPrivateGitEvidenceEnvironment(
   for (const key of REPOSITORY_LOCAL_GIT_ENVIRONMENT) delete environment[key]
   delete environment.GIT_CEILING_DIRECTORIES
   delete environment.CODETRUSS_INTERNAL_HOOK
+  delete environment.CODETRUSS_INTERNAL_PRE_COMMIT
   delete environment[CODETRUSS_EVIDENCE_OBJECT_DIRECTORY_ENV]
   for (const key of Object.keys(environment)) {
     if (key.startsWith('CODETRUSS_HOOK_')) delete environment[key]
