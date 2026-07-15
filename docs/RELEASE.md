@@ -1,8 +1,8 @@
 # Release process
 
-CodeTruss separates the public GitHub release from npm publication. A tag can
-therefore build, test, attest, and publish immutable release assets without an
-npm account, npm token, pre-existing npm package, or npm environment approval.
+CodeTruss builds, tests, and attests immutable GitHub release assets before
+publishing those exact bytes to npm. The release workflow therefore needs no npm
+account, npm token, package access, or npm environment approval.
 
 ## GitHub release
 
@@ -29,28 +29,41 @@ the GitHub release and its attestations.
 
 ## npm trusted publishing
 
-npm publishing is a separate, manual operation in
-`.github/workflows/publish-npm.yml`. Before enabling it:
+npm publishing is a manual operation in `.github/workflows/publish-npm.yml`.
+The public package is [`@codetruss/cli`][npm-package],
+and its one-time authenticated bootstrap publication is complete. Before each
+publication:
 
-1. Create an `npm` GitHub environment with required maintainer review.
-2. Ensure the public `@codetruss/cli` package exists. npm currently requires a
-   one-time authenticated bootstrap publish before a trusted publisher can be
-   configured for a new package.
-3. In npm package settings, configure the GitHub Actions trusted publisher with:
+1. Confirm the `npm` GitHub environment still requires maintainer review and
+   permits only protected branches. The workflow itself also requires a
+   `refs/heads/main` dispatch.
+2. Confirm npm package settings name the GitHub Actions trusted publisher with:
    organization or user `DeliriumPulse`, repository `codetruss-cli`, workflow
    filename `publish-npm.yml`, environment `npm`, and allowed action
-   `npm publish`.
-4. Run **Publish npm**, enter an existing GitHub release tag, and explicitly
+   `npm publish`. Publishing access must remain `mfa=publish`, which requires
+   2FA and disallows conventional publish tokens while permitting the trusted
+   OIDC publisher.
+3. Run **Publish npm**, enter an existing GitHub release tag, and explicitly
    select **Publish the verified release archive to npm**.
 
-The manual workflow checks out that tag, downloads rather than rebuilds the
-GitHub release assets, verifies the manifest, checksums, package contents,
-install behavior, and GitHub attestation, then publishes those exact bytes with
-npm's OIDC trusted publishing and provenance. It contains no npm token fallback.
+The manual workflow first verifies the selected tag and release in a job with no
+OIDC publishing permission. It requires a public, non-prerelease, immutable
+release; binds the attestation to the release workflow, exact tag, tag commit,
+and GitHub-hosted runner; verifies the manifest, checksums, package contents,
+and install behavior; then hands off the single verified tarball by immutable
+artifact ID and SHA-256 digest.
+
+A separate, environment-gated publish job receives `id-token: write`. It does
+not check out or execute selected-tag code. It downloads only that immutable
+artifact, rechecks the filename, SHA-256 digest, and package identity, then
+publishes the exact bytes through npm OIDC with provenance. The workflow
+contains no npm token fallback.
 
 ## Repository controls
 
-Before the first public tag, protect `main`, restrict tag creation to
-maintainers, require CI, review the `npm` environment approvers, and limit
-GitHub Actions to the SHA-pinned actions in this repository. If a release asset
-changes, bump the package version; do not replace an existing version's bytes.
+Keep `main` protected, restrict tag creation to maintainers, require CI, review
+the `npm` environment approvers, and limit GitHub Actions to the SHA-pinned
+actions in this repository. If a release asset changes, bump the package
+version; do not replace an existing version's bytes.
+
+[npm-package]: https://www.npmjs.com/package/@codetruss/cli
