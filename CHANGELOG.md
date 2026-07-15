@@ -5,7 +5,19 @@ checksums are published at <https://codetruss.com/downloads/codetruss-cli-latest
 
 ## Unreleased
 
-## 0.2.20 — 2026-07-14
+## 0.2.22 — 2026-07-14
+
+- Resolve Windows package-manager shims through shell-free PATH/PATHEXT
+  inspection before the first public release of the guided setup changes.
+
+## 0.2.21 — 2026-07-14 (unpublished)
+
+- Detect `pnpm`, `npm`, and `yarn` command shims correctly during guided setup
+  on Windows.
+- Make cross-platform hook tests provision the persistent local CLI that the
+  production hook installer intentionally requires.
+
+## 0.2.20 — 2026-07-14 (unpublished)
 
 - Ship the guided setup, local evidence privacy, hook guidance, invocation
   provenance, aggregate local metrics, and reproducible-build hardening from

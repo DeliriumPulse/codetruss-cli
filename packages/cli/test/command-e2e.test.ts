@@ -30,6 +30,15 @@ async function repository(): Promise<string> {
   return root
 }
 
+async function installPersistentCliFixture(root: string): Promise<void> {
+  await mkdir(join(root, 'node_modules', '.bin'), { recursive: true })
+  const localCli = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
+  await writeFile(localCli, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
+  await chmod(localCli, 0o755)
+  const exclude = git(root, 'rev-parse', '--git-path', 'info/exclude').trim()
+  await writeFile(isAbsolute(exclude) ? exclude : join(root, exclude), '/node_modules/\n', { flag: 'a' })
+}
+
 function runCli(
   root: string,
   args: string[],
@@ -62,10 +71,7 @@ describe('CLI snapshot and delta enforcement', () => {
     const root = await repository()
     await mkdir(join(root, 'src'))
     await mkdir(join(root, 'tests'))
-    await mkdir(join(root, 'node_modules', '.bin'), { recursive: true })
-    const localCli = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
-    await writeFile(localCli, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
-    await chmod(localCli, 0o755)
+    await installPersistentCliFixture(root)
     await writeFile(join(root, '.gitignore'), '/node_modules\n')
 
     const setup = runCli(root, ['setup'], {}, '\n\n')
@@ -81,10 +87,7 @@ describe('CLI snapshot and delta enforcement', () => {
     const root = await repository()
     await mkdir(join(root, 'src'))
     await mkdir(join(root, 'tests'))
-    await mkdir(join(root, 'node_modules', '.bin'), { recursive: true })
-    const localCli = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
-    await writeFile(localCli, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
-    await chmod(localCli, 0o755)
+    await installPersistentCliFixture(root)
     await writeFile(join(root, '.gitignore'), '/node_modules\n')
     await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
     await mkdir(`${root}-home`, { recursive: true })
@@ -192,6 +195,7 @@ describe('CLI snapshot and delta enforcement', () => {
 
   it('initializes repeated scope flags and warns before leaving hooks unconfigured', async () => {
     const configuredRoot = await repository()
+    await installPersistentCliFixture(configuredRoot)
     const configured = runCli(configuredRoot, [
       'init',
       '--allow', 'src/**',
@@ -268,12 +272,13 @@ describe('CLI snapshot and delta enforcement', () => {
 
   it('protects an existing agent runner immediately when an upgraded hook dispatches', async () => {
     const root = await repository()
+    await installPersistentCliFixture(root)
     await mkdir(join(root, 'src'))
     await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
     expect(runCli(root, ['init', '--allow', 'src/**']).status).toBe(0)
     expect(runCli(root, ['hooks', 'install', 'codex']).status).toBe(0)
     const exclude = git(root, 'rev-parse', '--git-path', 'info/exclude').trim()
-    await writeFile(isAbsolute(exclude) ? exclude : join(root, exclude), '# local excludes\n')
+    await writeFile(isAbsolute(exclude) ? exclude : join(root, exclude), '# local excludes\n/node_modules/\n')
     expect(spawnSync('git', ['-C', root, 'check-ignore', '--quiet', '--', '.codetruss/hooks/agent.cjs']).status).toBe(1)
 
     const dispatched = runCli(root, ['hooks', 'dispatch', 'codex'], {}, `${JSON.stringify({
@@ -408,6 +413,7 @@ describe('CLI snapshot and delta enforcement', () => {
 
   it('points configured repositories with hooks at diagnostics', async () => {
     const root = await repository()
+    await installPersistentCliFixture(root)
     await mkdir(join(root, 'src'))
     await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
     git(root, 'add', 'src/value.ts')
