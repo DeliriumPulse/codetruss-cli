@@ -10,11 +10,17 @@ const outfile = join(outDir, 'cli.cjs')
 
 await rm(outDir, { recursive: true, force: true })
 await build({
+  absWorkingDir: packageDir,
   entryPoints: [join(packageDir, 'src', 'cli.ts')],
   bundle: true,
   platform: 'node',
   target: 'node20.9',
   format: 'cjs',
+  // Keep module identity and emitted source labels relative to the logical
+  // workspace. Without this, esbuild resolves a symlinked node_modules tree to
+  // its physical worktree and produces different release bytes from the same
+  // source and dependency graph.
+  preserveSymlinks: true,
   legalComments: 'eof',
   outfile,
 })

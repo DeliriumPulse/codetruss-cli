@@ -62,7 +62,7 @@ fi
 
 "$EXECUTABLE" --version
 if ! command -v codetruss >/dev/null 2>&1; then
-  printf 'Add %s/bin to PATH, then run: codetruss init\n' "$PREFIX"
+  printf 'Add %s/bin to PATH, then run: codetruss setup\n' "$PREFIX"
 else
-  printf '%s\n' 'Ready. Run: codetruss init'
+  printf '%s\n' 'Ready. Run inside your Git repository: codetruss setup'
 fi

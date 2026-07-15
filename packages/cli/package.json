@@ -1,6 +1,6 @@
 {
   "name": "@codetruss/cli",
-  "version": "0.2.14",
+  "version": "0.2.24",
   "description": "Local-first scope, quality, and verification receipts for coding agents",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",

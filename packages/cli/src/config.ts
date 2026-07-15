@@ -1,7 +1,6 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
-import { spawnSync } from 'node:child_process'
-import { lstatSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { constants as fsConstants, lstatSync } from 'node:fs'
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { parse, stringify } from 'yaml'
 import { loadSigningKey, normalizePublicKey } from './signing.js'
 import { CONFIG_LLM_PROVIDERS, type CliConfig } from './types.js'
@@ -180,7 +179,27 @@ export async function initialize(root: string, force = false, options: Initializ
 
 async function detectVerify(root: string): Promise<string[]> {
   const exists = async (name: string) => access(join(root, name)).then(() => true, () => false)
-  const available = (command: string) => !spawnSync(command, ['--version'], { stdio: 'ignore' }).error
+  // Detect commands without executing repository-controlled code. This also
+  // recognizes Windows package-manager shims such as `pnpm.cmd`.
+  const available = async (command: string): Promise<boolean> => {
+    const extensions = process.platform === 'win32'
+      ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map((extension) => extension.trim()).filter(Boolean)
+      : ['']
+    const path = process.env.PATH ?? process.env.Path ?? process.env.path ?? ''
+    for (const rawDirectory of path.split(delimiter).filter(Boolean)) {
+      const directory = rawDirectory.startsWith('"') && rawDirectory.endsWith('"')
+        ? rawDirectory.slice(1, -1)
+        : rawDirectory
+      for (const extension of extensions) {
+        const candidate = join(directory, `${command}${extension}`)
+        const isFile = await stat(candidate).then((metadata) => metadata.isFile(), () => false)
+        if (!isFile) continue
+        if (process.platform === 'win32') return true
+        if (await access(candidate, fsConstants.X_OK).then(() => true, () => false)) return true
+      }
+    }
+    return false
+  }
   const packageScripts = async (): Promise<Record<string, unknown>> => {
     try {
       const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as { scripts?: unknown }
@@ -194,18 +213,18 @@ async function detectVerify(root: string): Promise<string[]> {
   }
   if (await exists('pnpm-lock.yaml')) {
     const scripts = await packageScripts()
-    return available('pnpm') ? ['lint', 'test'].filter((name) => typeof scripts[name] === 'string').map((name) => `pnpm ${name}`) : []
+    return await available('pnpm') ? ['lint', 'test'].filter((name) => typeof scripts[name] === 'string').map((name) => `pnpm ${name}`) : []
   }
   if (await exists('package-lock.json')) {
     const scripts = await packageScripts()
-    return available('npm') && typeof scripts.test === 'string' ? ['npm test'] : []
+    return await available('npm') && typeof scripts.test === 'string' ? ['npm test'] : []
   }
   if (await exists('yarn.lock')) {
     const scripts = await packageScripts()
-    return available('yarn') && typeof scripts.test === 'string' ? ['yarn test'] : []
+    return await available('yarn') && typeof scripts.test === 'string' ? ['yarn test'] : []
   }
-  if ((await exists('go.mod')) && available('go')) return ['go test ./...']
-  if ((await exists('Cargo.toml')) && available('cargo')) return ['cargo test']
-  if (((await exists('pyproject.toml')) || (await exists('requirements.txt'))) && available('pytest')) return ['pytest']
+  if ((await exists('go.mod')) && await available('go')) return ['go test ./...']
+  if ((await exists('Cargo.toml')) && await available('cargo')) return ['cargo test']
+  if (((await exists('pyproject.toml')) || (await exists('requirements.txt'))) && await available('pytest')) return ['pytest']
   return []
 }

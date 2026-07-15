@@ -15,16 +15,14 @@ macOS or Linux:
 
 ```bash
 curl -fsSL https://codetruss.com/install.sh | sh
-codetruss review --task "Review my current agent changes"
-codetruss verify latest
+codetruss setup
 ```
 
 Windows PowerShell:
 
 ```powershell
 irm https://codetruss.com/install.ps1 | iex
-codetruss review --task "Review my current agent changes"
-codetruss verify latest
+codetruss setup
 ```
 
 Homebrew on macOS:
@@ -65,28 +63,40 @@ See [DeliriumPulse/codetruss-plugins](https://github.com/DeliriumPulse/codetruss
 for the MIT-licensed manifests, skill instructions, privacy guardrails, and
 marketplace source.
 
-The first receipt needs no account or configuration. With no allow policy,
-changed files are deliberately classified as unexpected, so the review exits
-`1` with `REVIEW_REQUIRED` and still writes a signed receipt. Then make the
-scope contract explicit and automate it:
+Run `codetruss setup` once at the Git root. It proposes conventional source
+roots without defaulting to repository-wide access, shows detected verification
+commands and their exact trust fingerprint, installs the hooks you select, and
+runs diagnostics. It uploads nothing. Codex asks for one final project-hook
+approval in `/hooks`.
+
+To review an existing change before configuring automation:
 
 ```bash
-codetruss init --allow "src/**" --allow "tests/**" --deny "infra/production/**"
-codetruss hooks install all
+codetruss review --task "Review my current agent changes"
+codetruss verify latest
+```
+
+That first receipt needs no account or configuration. Without an allow policy,
+changed files are deliberately unexpected, so the review exits `1` with
+`REVIEW_REQUIRED` and still writes valid signed evidence.
+
+Wrap an agent command when you want the task and exact before/after Git states
+captured together:
+
+```bash
 codetruss run --task "Fix auth" --allow "src/auth/**" --verify "pnpm test" -- codex exec "Fix auth"
 ```
 
-Use `codetruss hooks install claude`, `codex`, `pre-commit`, or `all` to run the
-guard automatically. `codetruss hooks doctor all` verifies the installed hook
-commands, permissions, policy, and CLI resolution.
+Manual hook controls remain available through `codetruss hooks install`,
+`status`, `doctor`, and `uninstall`.
 
 ## Fail-closed policy
 
-`codetruss init` intentionally starts with an empty `allow` list. Until the
-approved scope is explicit, every changed file is unexpected and the session
-cannot receive `PASS`. Deny rules win over allow rules, and sensitive surfaces
-such as CI, infrastructure, migrations, secrets, dependencies, and lockfiles
-are flagged independently of scope.
+CodeTruss cannot return `PASS` until the approved scope is explicit. Guided
+setup requires at least one useful allow glob; lower-level `codetruss init`
+intentionally starts empty unless `--allow` is supplied. Deny rules win over
+allow rules, and sensitive surfaces such as CI, infrastructure, migrations,
+secrets, dependencies, and lockfiles are flagged independently of scope.
 
 ```yaml
 # .codetruss.yml
@@ -150,8 +160,9 @@ and can be checked later with `codetruss verify latest`.
 
 ## Privacy
 
-Deterministic `run`, `review`, `report`, `list`, `init`, `verify`, and hook
-checks run locally without contacting CodeTruss. Installation fetches release
+Deterministic `run`, `review`, `report`, `list`, `metrics`, `init`, `setup`,
+`verify`, `verify-policy`, and hook checks run locally without contacting
+CodeTruss. Installation fetches release
 metadata and package bytes from CodeTruss. Optional `--llm --provider
 anthropic|openai|claude` review sends the bounded task and diff directly to the
 selected provider using the developer's API key or authenticated local Claude
@@ -171,6 +182,12 @@ Agent-turn evidence is held in a private per-turn Git object store under Git
 metadata, is unavailable to ordinary repository Git commands, and is removed
 after the receipt is complete. Synced receipts omit the patch, absolute local
 path, agent command, raw verification commands/output, and signing secrets.
+
+`.codetruss.yml` is reviewable repository policy and may be committed.
+`.codetruss/` contains local receipts, patches, signatures, snapshots, and
+generated hook runners. CodeTruss adds that evidence root to the
+repository-local Git exclude and refuses future operations if evidence becomes
+tracked or is routed through an unsafe path.
 
 ## Source and development
 

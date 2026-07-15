@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { devNull, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -14,7 +14,12 @@ import {
   parseStatusZ,
 } from '../src/git.js'
 import { gitCommandArguments } from '../src/git-process.js'
-import { materializeIndexSnapshot, materializeTreeSnapshot, materializeWorkingTreeSnapshot } from '../src/git-snapshot.js'
+import {
+  linkInstalledNodeModules,
+  materializeIndexSnapshot,
+  materializeTreeSnapshot,
+  materializeWorkingTreeSnapshot,
+} from '../src/git-snapshot.js'
 
 const cleanup: string[] = []
 
@@ -154,6 +159,22 @@ describe('repository evidence', () => {
 })
 
 describe('materialized snapshots', () => {
+  it.runIf(process.platform !== 'win32')('links ignored node_modules installations represented by directory symlinks', async () => {
+    const root = await repository()
+    const dependencyRoot = `${root}-dependencies`
+    const snapshotRoot = `${root}-snapshot`
+    cleanup.push(dependencyRoot, snapshotRoot)
+    await mkdir(dependencyRoot)
+    await mkdir(snapshotRoot)
+    await writeFile(join(root, '.gitignore'), '/node_modules\n')
+    await writeFile(join(dependencyRoot, 'sentinel'), 'installed\n')
+    await symlink(dependencyRoot, join(root, 'node_modules'), 'dir')
+
+    expect(await linkInstalledNodeModules(root, snapshotRoot)).toEqual(['node_modules'])
+    expect((await lstat(join(snapshotRoot, 'node_modules'))).isSymbolicLink()).toBe(true)
+    expect(await realpath(join(snapshotRoot, 'node_modules'))).toBe(await realpath(dependencyRoot))
+  })
+
   it('materializes the exact index while leaving unstaged content out', async () => {
     const root = await repository()
     await mkdir(join(root, 'src'))

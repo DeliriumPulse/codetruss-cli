@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "version": "0.2.14",
-  "websiteArchive": "https://codetruss.com/downloads/codetruss-cli-0.2.14.tgz",
-  "archiveSha256": "7fd85c939a3224c0678f6541b52ba4dd7e40b68a8dfaffd5bd6c8e0c12425da1",
-  "sbomSha256": "3b42ec612bcf2340fd815127a39ab19e923794869cc912ad8358802ba6ee9438",
-  "bundleSha256": "30c1966c864a945244bff2160f4a0e1a157591e1ef612c52d771ce4374b9a4f4"
+  "version": "0.2.24",
+  "websiteArchive": "https://codetruss.com/downloads/codetruss-cli-0.2.24.tgz",
+  "archiveSha256": "793895784552e5d59540ffcc9dc2acf6bff6f778b59f9010bd901e4d4c3fa712",
+  "sbomSha256": "29d5d38b5cca75a393a95465487aaaa7e74eee5c656fa8f843e4d5f37d7eeb42",
+  "bundleSha256": "96be1bec20d5478dacc785e8aebebe71640726516702a792bd9cf1ecc2d35a1b"
 }

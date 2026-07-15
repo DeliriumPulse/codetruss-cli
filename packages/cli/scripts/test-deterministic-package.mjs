@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { buildDeterministicPackageArchive, deterministicGzip, PACKAGE_ARCHIVE_FILES } from './deterministic-package.mjs'
 import { cycloneDxSerialNumber, npmPurl } from './generate-sbom.mjs'
 import { decodeDeterministicGzip, verifyDeterministicPackageArchive } from './verify-deterministic-package.mjs'
@@ -14,8 +16,24 @@ function rejects(fn, pattern) {
 // Release builds must not depend on package-manager shim resolution: Windows
 // exposes those shims as `.cmd` files, which Node cannot spawn without a shell.
 const releaseBuilder = await readFile(new URL('./build-release.mjs', import.meta.url), 'utf8')
+const bundleBuilder = await readFile(new URL('./build.mjs', import.meta.url), 'utf8')
+assert.match(bundleBuilder, /preserveSymlinks:\s*true/, 'bundle bytes must not expose the physical target of a symlinked dependency tree')
+assert.match(bundleBuilder, /absWorkingDir:\s*packageDir/, 'bundle labels must not depend on the caller working directory')
 assert.doesNotMatch(releaseBuilder, /\brun\(['"](?:npm|pnpm|yarn)['"]/, 'release build must not spawn a package-manager shim')
 assert.match(releaseBuilder, /run\(process\.execPath, \[join\(scriptDir, 'build\.mjs'\)\]\)/)
+
+const scriptDir = dirname(fileURLToPath(import.meta.url))
+const packageDir = resolve(scriptDir, '..')
+const repoRoot = resolve(packageDir, '../..')
+const buildScript = join(scriptDir, 'build.mjs')
+async function buildBundleFrom(cwd) {
+  const result = spawnSync(process.execPath, [buildScript], { cwd, encoding: 'utf8' })
+  assert.equal(result.status, 0, `bundle build from ${cwd} failed:\n${result.stdout}${result.stderr}`)
+  return readFile(join(packageDir, 'dist', 'cli.cjs'))
+}
+const repoRootBundle = await buildBundleFrom(repoRoot)
+const packageRootBundle = await buildBundleFrom(packageDir)
+assert.deepEqual(repoRootBundle, packageRootBundle, 'bundle bytes must not depend on the caller working directory')
 
 // The install smoke invokes npm and generated command shims through cmd.exe on
 // Windows, but native executables such as Git and PowerShell must receive their

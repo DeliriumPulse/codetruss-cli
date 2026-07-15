@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { Receipt } from '../src/types.js'
@@ -28,6 +28,15 @@ async function repository(): Promise<string> {
   git(root, 'config', 'user.name', 'CodeTruss Test')
   git(root, 'config', 'user.email', 'test@codetruss.invalid')
   return root
+}
+
+async function installPersistentCliFixture(root: string): Promise<void> {
+  await mkdir(join(root, 'node_modules', '.bin'), { recursive: true })
+  const localCli = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
+  await writeFile(localCli, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
+  await chmod(localCli, 0o755)
+  const exclude = git(root, 'rev-parse', '--git-path', 'info/exclude').trim()
+  await writeFile(isAbsolute(exclude) ? exclude : join(root, exclude), '/node_modules/\n', { flag: 'a' })
 }
 
 function runCli(
@@ -58,8 +67,196 @@ async function latestReceipt(root: string): Promise<Receipt> {
 }
 
 describe('CLI snapshot and delta enforcement', () => {
+  it('finishes the headline interactive setup command with confirmed suggested scope', async () => {
+    const root = await repository()
+    await mkdir(join(root, 'src'))
+    await mkdir(join(root, 'tests'))
+    await installPersistentCliFixture(root)
+    await writeFile(join(root, '.gitignore'), '/node_modules\n')
+
+    const setup = runCli(root, ['setup'], {}, '\n\n')
+
+    expect(setup.status, `${setup.stderr}\n${setup.stdout}`).toBe(0)
+    expect(setup.stdout).toContain('Suggested allowed change roots: src/**, tests/**')
+    expect(setup.stdout).toContain('READY: pre-commit and Claude automatic checks are active')
+    const config = await readFile(join(root, '.codetruss.yml'), 'utf8')
+    expect(config).toMatch(/allow:\n\s+- src\/\*\*\n\s+- tests\/\*\*/)
+  }, 30_000)
+
+  it('completes idempotent local-only setup and keeps generated evidence out of normal staging', async () => {
+    const root = await repository()
+    await mkdir(join(root, 'src'))
+    await mkdir(join(root, 'tests'))
+    await installPersistentCliFixture(root)
+    await writeFile(join(root, '.gitignore'), '/node_modules\n')
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
+    await mkdir(`${root}-home`, { recursive: true })
+    const networkBlocker = join(`${root}-home`, 'block-network.cjs')
+    await writeFile(networkBlocker, [
+      'const net = require("node:net")',
+      'const blocked = () => { throw new Error("setup attempted network access") }',
+      'const connect = net.connect',
+      'const createConnection = net.createConnection',
+      'const local = (value) => typeof value === "string" || (value && typeof value === "object" && typeof value.path === "string")',
+      'net.connect = function (...args) { return local(args[0]) ? connect.apply(this, args) : blocked() }',
+      'net.createConnection = function (...args) { return local(args[0]) ? createConnection.apply(this, args) : blocked() }',
+      'global.fetch = blocked',
+    ].join(';'))
+    const offlineEnvironment = { NODE_OPTIONS: `--require=${networkBlocker}` }
+
+    const configured = runCli(root, [
+      'setup', '--yes', '--allow', 'src/**', '--allow', 'tests/**', '--hooks', 'all',
+    ], offlineEnvironment)
+    expect(configured.status, `${configured.stderr}\n${configured.stdout}`).toBe(0)
+    expect(configured.stdout).toContain('local only; nothing is uploaded')
+    expect(configured.stdout).toContain('READY: pre-commit and Claude automatic checks are active')
+    expect(configured.stdout).toContain('ACTION REQUIRED FOR CODEX: open /hooks')
+    expect(configured.stdout).toContain('Undo automatic checks: codetruss hooks uninstall all')
+    expect(configured.stdout).toContain('Receipts stay on this machine unless you explicitly run codetruss sync')
+
+    const installedFiles = [
+      join(root, '.git', 'hooks', 'pre-commit'),
+      join(root, '.claude', 'settings.json'),
+      join(root, '.codex', 'hooks.json'),
+      join(root, '.codetruss', 'hooks', 'agent.cjs'),
+    ]
+    const firstInstall = await Promise.all(installedFiles.map((path) => readFile(path, 'utf8')))
+    const rerun = runCli(root, [
+      'setup', '--yes', '--allow', 'src/**', '--allow', 'tests/**', '--hooks', 'all',
+    ], offlineEnvironment)
+    expect(rerun.status, `${rerun.stderr}\n${rerun.stdout}`).toBe(0)
+    expect(await Promise.all(installedFiles.map((path) => readFile(path, 'utf8')))).toEqual(firstInstall)
+    const configBeforeMismatch = await readFile(join(root, '.codetruss.yml'), 'utf8')
+    const mismatch = runCli(root, ['setup', '--yes', '--allow', 'other/**', '--hooks', 'all'], offlineEnvironment)
+    expect(mismatch.status).toBe(3)
+    expect(mismatch.stderr).toContain('already exists with a different allow policy')
+    expect(await readFile(join(root, '.codetruss.yml'), 'utf8')).toBe(configBeforeMismatch)
+    expect(await Promise.all(installedFiles.map((path) => readFile(path, 'utf8')))).toEqual(firstInstall)
+
+    await writeFile(join(root, '.codetruss', 'receipts', 'must-stay-local.patch'), 'private source diff\n')
+    git(root, 'add', '.')
+    expect(git(root, 'diff', '--cached', '--name-only')).not.toContain('.codetruss/')
+  }, 30_000)
+
+  it('rejects unrelated setup options instead of silently ignoring them', async () => {
+    const root = await repository()
+    const result = runCli(root, ['setup', '--allow', 'src/**', '--provider', 'openai'])
+    expect(result.status).toBe(3)
+    expect(result.stderr).toContain('setup does not accept --provider')
+    await expect(readFile(join(root, '.codetruss.yml'))).rejects.toMatchObject({ code: 'ENOENT' })
+
+    const forced = runCli(root, ['setup', '--allow', 'src/**', '--force'])
+    expect(forced.status).toBe(3)
+    expect(forced.stderr).toContain('setup does not accept --force')
+
+    const misplacedTrust = runCli(root, ['review', '--trust-verify', '--task', 'Review the current change', '--no-verify'])
+    expect(misplacedTrust.status).toBe(3)
+    expect(misplacedTrust.stderr).toContain('--trust-verify is accepted only by codetruss setup')
+
+    const typoHelp = runCli(root, ['revie', '--help'])
+    expect(typoHelp.status).toBe(3)
+    expect(typoHelp.stderr).toContain('unknown command revie')
+
+    const versionOption = runCli(root, ['version', '--json'])
+    expect(versionOption.status).toBe(3)
+    expect(versionOption.stderr).toContain('version does not accept --json')
+
+    const helpOption = runCli(root, ['help', '--llm'])
+    expect(helpOption.status).toBe(3)
+    expect(helpOption.stderr).toContain('help does not accept --llm')
+
+    const commandHelp = runCli(root, ['run', '--help'])
+    expect(commandHelp.status).toBe(0)
+    expect(commandHelp.stdout).toContain('codetruss run --task')
+
+    for (const args of [
+      ['review', '--llm=false', '--task', 'Review the current change', '--no-verify'],
+      ['review', '--no-verify=false', '--task', 'Review the current change'],
+      ['setup', '--trust-verify=false', '--allow', 'src/**', '--hooks', 'none'],
+    ]) {
+      const inlineBoolean = runCli(root, args)
+      expect(inlineBoolean.status).toBe(3)
+      expect(inlineBoolean.stderr).toContain('does not accept a value')
+    }
+
+    const misspelledVerify = runCli(root, ['review', '--verfy', 'npm test', '--task', 'Review the current change', '--no-verify'])
+    expect(misspelledVerify.status).toBe(3)
+    expect(misspelledVerify.stderr).toContain('review does not accept --verfy')
+
+    const blankVerify = runCli(root, ['review', '--verify', '   ', '--task', 'Review the current change'])
+    expect(blankVerify.status).toBe(3)
+    expect(blankVerify.stderr).toContain('--verify requires a non-empty value')
+
+    const conflictingVerify = runCli(root, ['review', '--verify', 'npm test', '--no-verify', '--task', 'Review the current change'])
+    expect(conflictingVerify.status).toBe(3)
+    expect(conflictingVerify.stderr).toContain('--no-verify cannot be combined with --verify')
+
+    const extraReportId = runCli(root, ['report', 'latest', 'extra'])
+    expect(extraReportId.status).toBe(3)
+    expect(extraReportId.stderr).toContain('report does not accept more than 1 positional argument')
+
+    const equalsRoot = await repository()
+    const equalsValue = runCli(equalsRoot, ['setup', '--yes', '--allow=src/**=literal', '--hooks', 'none'])
+    expect(equalsValue.status, `${equalsValue.stderr}\n${equalsValue.stdout}`).toBe(0)
+    expect(await readFile(join(equalsRoot, '.codetruss.yml'), 'utf8')).toContain('src/**=literal')
+
+    const unattended = runCli(root, ['setup', '--yes', '--hooks', 'none'])
+    expect(unattended.status).toBe(3)
+    expect(unattended.stderr).toContain('non-interactive setup requires at least one explicit --allow')
+  }, 60_000)
+
+  it('leaves no active hook when verification trust is declined during setup', async () => {
+    const root = await repository()
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
+    await writeFile(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
+    await writeFile(join(root, 'package.json'), `${JSON.stringify({
+      private: true,
+      scripts: { lint: 'node -e ""', test: 'node -e ""' },
+    }, null, 2)}\n`)
+
+    const declined = runCli(root, ['setup', '--allow', 'src/**', '--hooks', 'all'], {}, 'not now\n')
+    expect(declined.status, `${declined.stderr}\n${declined.stdout}`).toBe(3)
+    expect(declined.stdout).toContain('Verification fingerprint: ')
+    expect(declined.stdout).toContain('Setup paused before hook installation')
+    await expect(readFile(join(root, '.git', 'hooks', 'pre-commit'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(root, '.claude', 'settings.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(root, '.codex', 'hooks.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+  }, 30_000)
+
+  it('honors explicit verification trust even when automatic hooks are skipped', async () => {
+    const root = await repository()
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n')
+    await writeFile(join(root, 'package.json'), `${JSON.stringify({
+      private: true,
+      scripts: { test: 'node -e ""' },
+    }, null, 2)}\n`)
+
+    const inspected = runCli(root, [
+      'setup', '--yes', '--allow', 'src/**', '--hooks', 'none',
+    ])
+    expect(inspected.status, `${inspected.stderr}\n${inspected.stdout}`).toBe(0)
+    expect(inspected.stdout).toContain('Verification fingerprint: ')
+    expect(inspected.stdout).toContain('Verification commands remain untrusted')
+    const untrusted = runCli(root, ['verify-policy', 'status'])
+    expect(untrusted.status).toBe(1)
+    expect(untrusted.stdout).toContain('untrusted ')
+
+    const setup = runCli(root, [
+      'setup', '--yes', '--allow', 'src/**', '--hooks', 'none', '--trust-verify',
+    ])
+    expect(setup.status, `${setup.stderr}\n${setup.stdout}`).toBe(0)
+    expect(setup.stdout).toContain('Trusted the exact verification command list')
+    expect(setup.stdout).toContain('Automatic hooks were not installed')
+    const status = runCli(root, ['verify-policy', 'status'])
+    expect(status.status, status.stderr).toBe(0)
+    expect(status.stdout).toContain('trusted ')
+  }, 30_000)
+
   it('initializes repeated scope flags and warns before leaving hooks unconfigured', async () => {
     const configuredRoot = await repository()
+    await installPersistentCliFixture(configuredRoot)
     const configured = runCli(configuredRoot, [
       'init',
       '--allow', 'src/**',
@@ -74,6 +271,13 @@ describe('CLI snapshot and delta enforcement', () => {
     const installed = runCli(configuredRoot, ['hooks', 'install', 'all'])
     expect(installed.status, `${installed.stderr}\n${installed.stdout}`).toBe(0)
     expect(installed.stdout).toContain('installed ')
+    await mkdir(join(configuredRoot, '.codetruss', 'receipts'), { recursive: true })
+    await writeFile(join(configuredRoot, '.codetruss', 'receipts', 'must-stay-local.patch'), 'private source diff\n')
+    git(configuredRoot, 'add', '.')
+    expect(git(configuredRoot, 'diff', '--cached', '--name-only')).not.toContain('.codetruss/')
+    expect(git(configuredRoot, 'check-ignore', '--no-index', '.codetruss/receipts/must-stay-local.patch')).toContain(
+      '.codetruss/receipts/must-stay-local.patch',
+    )
 
     const unconfiguredRoot = await repository()
     const unconfigured = runCli(unconfiguredRoot, ['init'])
@@ -84,7 +288,7 @@ describe('CLI snapshot and delta enforcement', () => {
     const refused = runCli(unconfiguredRoot, ['hooks', 'install', 'all'])
     expect(refused.status).toBe(3)
     expect(refused.stderr).toContain('agent hooks require at least one allow glob')
-  })
+  }, 20_000)
 
   it('completes the real hook runtime to CLI result-file boundary', async () => {
     const root = await repository()
@@ -117,10 +321,63 @@ describe('CLI snapshot and delta enforcement', () => {
     expect(stopped.stdout).toBe('')
 
     const receipt = await latestReceipt(root)
-    expect(receipt).toMatchObject({ verdict: 'PASS', task: 'Update the scoped value' })
+    expect(receipt).toMatchObject({
+      verdict: 'PASS',
+      task: 'Update the scoped value',
+      invocation: { kind: 'agent_hook', provenance: 'hook_context', surface: 'codex', cliVersion: expect.any(String) },
+    })
     const verified = runCli(root, ['verify', receipt.sessionId])
     expect(verified.status, verified.stderr).toBe(0)
     expect(verified.stdout).toContain(`verified ${receipt.sessionId} (PASS)`)
+  }, 30_000)
+
+  it('protects an existing agent runner immediately when an upgraded hook dispatches', async () => {
+    const root = await repository()
+    await installPersistentCliFixture(root)
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
+    expect(runCli(root, ['init', '--allow', 'src/**']).status).toBe(0)
+    expect(runCli(root, ['hooks', 'install', 'codex']).status).toBe(0)
+    const exclude = git(root, 'rev-parse', '--git-path', 'info/exclude').trim()
+    await writeFile(isAbsolute(exclude) ? exclude : join(root, exclude), '# local excludes\n/node_modules/\n')
+    expect(spawnSync('git', ['-C', root, 'check-ignore', '--quiet', '--', '.codetruss/hooks/agent.cjs']).status).toBe(1)
+
+    const dispatched = runCli(root, ['hooks', 'dispatch', 'codex'], {}, `${JSON.stringify({
+      session_id: 'upgraded-unignored-runner',
+      turn_id: 'upgraded-unignored-turn',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Capture a protected baseline',
+      cwd: root,
+    })}\n`)
+
+    expect(dispatched.status, `${dispatched.stderr}\n${dispatched.stdout}`).toBe(0)
+    expect(git(root, 'check-ignore', '--no-index', '.codetruss/hooks/agent.cjs')).toContain(
+      '.codetruss/hooks/agent.cjs',
+    )
+  }, 30_000)
+
+  it('fails closed when a wrapped agent force-stages private evidence', async () => {
+    const root = await repository()
+    await writeFile(join(root, 'value.ts'), 'export const value = 1\n')
+    git(root, 'add', 'value.ts')
+    git(root, 'commit', '--quiet', '-m', 'baseline')
+    const agentScript = [
+      'const { mkdirSync, writeFileSync } = require("node:fs")',
+      'const { spawnSync } = require("node:child_process")',
+      'mkdirSync(".codetruss/receipts", { recursive: true })',
+      'writeFileSync(".codetruss/receipts/force-staged.patch", "private diff\\n")',
+      'const result = spawnSync("git", ["add", "-f", ".codetruss/receipts/force-staged.patch"])',
+      'process.exit(result.status ?? 1)',
+    ].join(';')
+
+    const result = runCli(root, [
+      'run', '--task', 'Attempt to stage private CodeTruss evidence', '--allow', 'value.ts', '--no-verify',
+      '--', process.execPath, '-e', agentScript,
+    ])
+
+    expect(result.status).toBe(3)
+    expect(result.stderr).toContain('.codetruss/ already contains 1 Git-tracked file')
+    expect(git(root, 'diff', '--cached', '--name-only')).toContain('.codetruss/receipts/force-staged.patch')
   }, 30_000)
 
   it('keeps noisy hook verification bounded without overflowing the child envelope', async () => {
@@ -177,14 +434,85 @@ describe('CLI snapshot and delta enforcement', () => {
     expect(reviewed.stdout).toContain('First signed receipt created')
     expect(reviewed.stdout).toContain('REVIEW_REQUIRED exits 1 by design')
     expect(reviewed.stdout).toContain('codetruss verify latest')
-    expect(reviewed.stdout).toContain('codetruss init --allow')
-    expect(reviewed.stdout).toContain('After policy: codetruss hooks install all')
+    expect(reviewed.stdout).toContain('Automate future checks: codetruss setup')
     expect((await readdir(join(root, '.codetruss', 'receipts'))).sort()).toHaveLength(4)
+    expect((await latestReceipt(root)).invocation).toMatchObject({ kind: 'manual_review', provenance: 'direct', cliVersion: expect.any(String) })
 
     const verified = runCli(root, ['verify', 'latest'])
     expect(verified.status, verified.stderr).toBe(0)
     expect(verified.stdout).toContain('verified ')
     expect(verified.stdout).toContain('(REVIEW_REQUIRED)')
+
+    const metrics = runCli(root, ['metrics', '--json'])
+    expect(metrics.status, metrics.stderr).toBe(0)
+    expect(JSON.parse(metrics.stdout)).toMatchObject({
+      privacy: { localOnly: true, receiptLevelContentIncluded: false },
+      receipts: { verified: 1, invocations: { manual_review: 1 } },
+    })
+    expect(metrics.stdout).not.toContain('Review my current agent changes')
+  }, 20_000)
+
+  it('gives configured repositories the next hook step instead of repeating setup', async () => {
+    const root = await repository()
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
+    git(root, 'add', 'src/value.ts')
+    git(root, 'commit', '--quiet', '-m', 'baseline')
+
+    const setup = runCli(root, ['setup', '--yes', '--allow', 'src/**', '--hooks', 'none'])
+    expect(setup.status, `${setup.stderr}\n${setup.stdout}`).toBe(0)
+    git(root, 'add', '.codetruss.yml')
+    git(root, 'commit', '--quiet', '-m', 'configure CodeTruss')
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 2\n')
+
+    const reviewed = runCli(root, ['review', '--task', 'Update the approved source file'])
+    expect(reviewed.status, `${reviewed.stderr}\n${reviewed.stdout}`).toBe(0)
+    expect(reviewed.stdout).toContain('First signed receipt created')
+    expect(reviewed.stdout).toContain('Enable automatic checks: codetruss hooks install all')
+    expect(reviewed.stdout).not.toContain('Automate future checks: codetruss setup')
+  }, 20_000)
+
+  it('points configured repositories with hooks at diagnostics', async () => {
+    const root = await repository()
+    await installPersistentCliFixture(root)
+    await mkdir(join(root, 'src'))
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 1\n')
+    git(root, 'add', 'src/value.ts')
+    git(root, 'commit', '--quiet', '-m', 'baseline')
+
+    const setup = runCli(root, ['setup', '--yes', '--allow', 'src/**', '--hooks', 'none'])
+    expect(setup.status, `${setup.stderr}\n${setup.stdout}`).toBe(0)
+    git(root, 'add', '.codetruss.yml')
+    git(root, 'commit', '--quiet', '-m', 'configure CodeTruss')
+    const installed = runCli(root, ['hooks', 'install', 'pre-commit'])
+    expect(installed.status, `${installed.stderr}\n${installed.stdout}`).toBe(0)
+    await writeFile(join(root, 'src', 'value.ts'), 'export const value = 2\n')
+
+    const reviewed = runCli(root, ['review', '--task', 'Update the approved source file'])
+    expect(reviewed.status, `${reviewed.stderr}\n${reviewed.stdout}`).toBe(0)
+    expect(reviewed.stdout).toContain('Check automatic hooks: codetruss hooks doctor all')
+    expect(reviewed.stdout).not.toContain('codetruss setup')
+  }, 20_000)
+
+  it('records generated pre-commit reviews as automated provenance', async () => {
+    const root = await repository()
+    await writeFile(join(root, 'value.ts'), 'export const value = 1\n')
+    git(root, 'add', 'value.ts')
+    git(root, 'commit', '--quiet', '-m', 'baseline')
+    await writeFile(join(root, 'value.ts'), 'export const value = 2\n')
+    git(root, 'add', 'value.ts')
+
+    const result = runCli(
+      root,
+      ['review', '--staged', '--task', 'pre-commit', '--allow', 'value.ts', '--no-verify'],
+      { CODETRUSS_INTERNAL_PRE_COMMIT: '1' },
+    )
+    expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0)
+    expect(result.stdout).toContain('First signed receipt created. PASS exits 0.')
+    expect(result.stdout).not.toContain('REVIEW_REQUIRED exits 1')
+    expect((await latestReceipt(root)).invocation).toMatchObject({
+      kind: 'pre_commit', provenance: 'self_attested', cliVersion: expect.any(String),
+    })
   }, 20_000)
 
   it('supports global auth status and logout outside a Git repository', async () => {
@@ -236,6 +564,7 @@ describe('CLI snapshot and delta enforcement', () => {
     expect(result.status, result.stderr).toBe(2)
     const receipt = await latestReceipt(root)
     expect(receipt.verdict).toBe('FAILED')
+    expect(receipt.invocation).toMatchObject({ kind: 'manual_review', provenance: 'direct', cliVersion: expect.any(String) })
     expect(receipt.analyzers.findings.some((finding) => finding.title.includes('AWS access key'))).toBe(true)
     expect(receipt.diff.truncated).toBe(false)
     expect(await readFile(join(root, '.codetruss', 'receipts', receipt.evidence.patchFile!), 'utf8')).toContain(SYNTHETIC_AWS_KEY)
@@ -256,6 +585,7 @@ describe('CLI snapshot and delta enforcement', () => {
     expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0)
     const receipt = await latestReceipt(root)
     expect(receipt.verdict).toBe('PASS')
+    expect(receipt.invocation).toMatchObject({ kind: 'manual_review', provenance: 'direct', cliVersion: expect.any(String) })
     expect(receipt.verifications).toEqual([expect.objectContaining({ command: verify, exitCode: 0 })])
     expect(await readFile(join(root, 'src', 'value.ts'), 'utf8')).toContain('working')
   }, 20_000)
@@ -351,6 +681,7 @@ describe('CLI snapshot and delta enforcement', () => {
     expect([0, 1], result.stderr).toContain(result.status)
     const receipt = await latestReceipt(root)
     expect(receipt.startCommit).toBe('')
+    expect(receipt.invocation).toMatchObject({ kind: 'manual_run', provenance: 'direct', cliVersion: expect.any(String) })
     expect(receipt.endCommit).toMatch(/^[0-9a-f]{40,64}$/)
     expect(receipt.files).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'src/first.ts', change: 'added' })]))
     expect(receipt.reasons).not.toContain('no repository files changed')

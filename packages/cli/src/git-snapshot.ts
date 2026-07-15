@@ -182,7 +182,9 @@ export async function linkInstalledNodeModules(
   ]).stdout)
   const linked: string[] = []
   for (const rawPath of ignored) {
-    if (!/(^|\/)node_modules\/$/.test(rawPath)) continue
+    // Git appends `/` for ignored directories but not for ignored directory
+    // symlinks. Both are valid local dependency installations.
+    if (!/(^|\/)node_modules\/?$/.test(rawPath)) continue
     const path = normalizeRepoPath(rawPath)
     const source = nativePath(resolve(repoRoot), path)
     const destination = nativePath(resolve(snapshotRoot), path)

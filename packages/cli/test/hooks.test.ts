@@ -2,9 +2,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { chmod, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_CONFIG } from '../src/config.js'
 import { captureDiffEvidence, changedFiles } from '../src/git.js'
 import { createExactHookBaseline } from '../src/hook-baseline.js'
@@ -12,6 +12,7 @@ import {
   CODETRUSS_HOOK_BASELINE_DIRTY_FILES_SHA256_ENV,
   CODETRUSS_HOOK_CONTEXT_PATH_ENV,
   CODETRUSS_HOOK_CONTEXT_SHA256_ENV,
+  CODETRUSS_HOOK_SURFACE_ENV,
   handleAgentHook,
   hookReviewEnvironment,
   readHookTurnContext,
@@ -19,7 +20,7 @@ import {
 } from '../src/hook-runtime.js'
 import { CODETRUSS_HOOK_RESULT_PATH_ENV, CODETRUSS_HOOK_REVIEW_ATTEMPT_ID_ENV } from '../src/hook-result.js'
 import { materializeTreeSnapshot, materializeWorkingTreeSnapshot } from '../src/git-snapshot.js'
-import { doctorHooks, hookStatus, installHooks, uninstallHooks } from '../src/hooks.js'
+import { doctorHooks, hookStatus, inspectLocalHookHealth, installHooks, uninstallHooks } from '../src/hooks.js'
 import { classifyPath, isDependencyFile, sensitiveCategory } from '../src/policy.js'
 import { hookSessionId } from '../src/receipt.js'
 import {
@@ -34,6 +35,22 @@ import type { CliConfig } from '../src/types.js'
 
 const CLI_ENTRY = fileURLToPath(new URL('../src/cli.ts', import.meta.url))
 const TSX_BIN = fileURLToPath(import.meta.resolve('tsx/cli'))
+const originalPath = process.env.PATH
+let cliShimDirectory = ''
+
+beforeAll(async () => {
+  cliShimDirectory = await mkdtemp(join(tmpdir(), 'codetruss-cli-path-shim-'))
+  const executable = join(cliShimDirectory, process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
+  await writeFile(executable, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
+  await chmod(executable, 0o755)
+  process.env.PATH = `${cliShimDirectory}${delimiter}${originalPath ?? ''}`
+})
+
+afterAll(async () => {
+  if (originalPath === undefined) delete process.env.PATH
+  else process.env.PATH = originalPath
+  if (cliShimDirectory) await rm(cliShimDirectory, { recursive: true, force: true })
+})
 
 function git(root: string, ...args: string[]): string {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' })
@@ -244,6 +261,36 @@ describe('hook installation', () => {
     await expect(readFile(join(root, '.codex', 'hooks.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it('refuses every automatic hook until repository verification commands are trusted', async () => {
+    const root = await repo()
+    await writeFile(join(root, '.codetruss.yml'), [
+      'version: 1',
+      'allow:',
+      '  - src/**',
+      'verify:',
+      '  - node -e "process.exit(0)"',
+      '',
+    ].join('\n'))
+
+    await expect(installHooks(root, 'pre-commit')).rejects.toThrow('hooks require trusted repository verification commands')
+    await expect(readFile(join(root, '.git', 'hooks', 'pre-commit'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('does not mutate hook files when no persistent CodeTruss CLI is available', async () => {
+    const root = await repo()
+    await writeConfig(root)
+    const savedPath = process.env.PATH
+    process.env.PATH = ''
+    try {
+      await expect(installHooks(root, 'all')).rejects.toThrow('require a persistent CodeTruss CLI')
+    } finally {
+      process.env.PATH = savedPath
+    }
+    await expect(readFile(join(root, '.git', 'hooks', 'pre-commit'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(root, '.claude', 'settings.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(join(root, '.codex', 'hooks.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('preserves invalid user-owned JSON instead of replacing it', async () => {
     const root = await repo()
     await writeConfig(root)
@@ -277,9 +324,12 @@ describe('hook installation', () => {
     const hook = await readFile(path, 'utf8')
     expect(hook).toContain('git -c core.longpaths=true rev-parse --show-toplevel')
     expect(hook).toContain('review --staged --task "pre-commit"')
+    expect(hook).toContain('CODETRUSS_INTERNAL_PRE_COMMIT=1')
     expect(hook).not.toContain('--no-verify')
     await installHooks(root, 'pre-commit')
-    expect((await readFile(path, 'utf8')).match(/codetruss-agent-guard:begin/g)).toHaveLength(1)
+    const reinstalled = await readFile(path, 'utf8')
+    expect(reinstalled).toBe(hook)
+    expect(reinstalled.match(/codetruss-agent-guard:begin/g)).toHaveLength(1)
   })
 
   it.runIf(process.platform !== 'win32')('allows REVIEW_REQUIRED but blocks FAILED and operational errors at pre-commit', async () => {
@@ -347,12 +397,12 @@ describe('hook installation', () => {
     expect(final.hooks.Stop).toBeUndefined()
   })
 
-  it.runIf(process.platform !== 'win32')('diagnoses an exact healthy installation and fails when executable hook code drifts', async () => {
+  it('diagnoses an exact healthy installation and fails when executable hook code drifts', async () => {
     const root = await repo()
     await writeConfig(root)
-    const bin = join(root, 'node_modules', '.bin', 'codetruss')
+    const bin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
     await mkdir(dirname(bin), { recursive: true })
-    await writeFile(bin, '#!/bin/sh\nexit 0\n')
+    await writeFile(bin, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
     await chmod(bin, 0o755)
     await installHooks(root, 'all')
     const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
@@ -366,16 +416,66 @@ describe('hook installation', () => {
         expect.objectContaining({ level: 'warning', target: 'codex', message: expect.stringContaining('open /hooks') }),
       ]))
       expect(output.mock.calls.flat().join('')).toContain('doctor\thealthy\t0 error(s), 1 warning(s)')
+      await expect(inspectLocalHookHealth(root)).resolves.toEqual({
+        preCommit: 'healthy',
+        claude: 'healthy',
+        codex: 'warning',
+      })
 
       await writeFile(join(root, '.codetruss', 'hooks', 'agent.cjs'), 'module.exports = "changed"\n')
       const unhealthy = await doctorHooks(root, 'codex')
       expect(unhealthy.ok).toBe(false)
       expect(unhealthy.checks).toContainEqual(expect.objectContaining({
-        level: 'error', target: 'runtime', message: expect.stringContaining('differs from this CLI version'),
+        level: 'error', target: 'agent-runtime', message: expect.stringContaining('differs from this CLI version'),
       }))
+      await expect(inspectLocalHookHealth(root)).resolves.toEqual({
+        preCommit: 'healthy',
+        claude: 'unhealthy',
+        codex: 'unhealthy',
+      })
     } finally {
       output.mockRestore()
     }
+  })
+
+  it('keeps pre-commit-only health independent from agent scope while reporting verification trust', async () => {
+    const root = await repo()
+    const bin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
+    await mkdir(dirname(bin), { recursive: true })
+    await writeFile(bin, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
+    await chmod(bin, 0o755)
+    await installHooks(root, 'pre-commit')
+
+    await expect(inspectLocalHookHealth(root)).resolves.toEqual({
+      preCommit: 'healthy',
+      claude: 'not_installed',
+      codex: 'not_installed',
+    })
+
+    await writeFile(join(root, '.codetruss.yml'), 'version: 1\nallow: []\ndeny: []\nverify:\n  - node --version\n')
+    await expect(inspectLocalHookHealth(root)).resolves.toEqual({
+      preCommit: 'unhealthy',
+      claude: 'not_installed',
+      codex: 'not_installed',
+    })
+  })
+
+  it('reports partial and malformed agent hook definitions as unhealthy', async () => {
+    const root = await repo()
+    await writeConfig(root)
+    const bin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
+    await mkdir(dirname(bin), { recursive: true })
+    await writeFile(bin, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
+    await chmod(bin, 0o755)
+    await installHooks(root, 'all')
+    const path = join(root, '.codex', 'hooks.json')
+    const partial = JSON.parse(await readFile(path, 'utf8')) as { hooks: Record<string, unknown> }
+    delete partial.hooks.Stop
+    await writeFile(path, `${JSON.stringify(partial)}\n`)
+    await expect(inspectLocalHookHealth(root)).resolves.toMatchObject({ codex: 'unhealthy' })
+
+    await writeFile(path, '{"marker":".codetruss/hooks/agent.cjs"')
+    await expect(inspectLocalHookHealth(root)).resolves.toMatchObject({ codex: 'unhealthy' })
   })
 
   it.runIf(process.platform !== 'win32')('routes hook JSON from a subdirectory through the local CLI dispatcher', async () => {
@@ -472,6 +572,7 @@ describe('exact immutable hook snapshots', () => {
     expect(withoutPrivateGitEvidenceEnvironment({
       SAFE_VALUE: 'keep',
       CODETRUSS_INTERNAL_HOOK: '1',
+      CODETRUSS_INTERNAL_PRE_COMMIT: '1',
       CODETRUSS_HOOK_CONTEXT_PATH: '/private/context',
       CODETRUSS_EVIDENCE_OBJECT_DIRECTORY: '/private/objects',
       GIT_OBJECT_DIRECTORY: '/private/objects',
@@ -720,6 +821,7 @@ describe('exact immutable hook snapshots', () => {
       HOME: `${root}-home`,
       CODETRUSS_SIGNING_KEY: join(root, '.codetruss', 'hook-signing.pem'),
       CODETRUSS_INTERNAL_HOOK: '1',
+      [CODETRUSS_HOOK_SURFACE_ENV]: 'codex',
       CODETRUSS_HOOK_START_COMMIT: git(root, 'rev-parse', 'HEAD'),
       CODETRUSS_HOOK_END_COMMIT: git(root, 'rev-parse', 'HEAD'),
       CODETRUSS_HOOK_STARTED_AT: '2026-07-14T10:00:00.000Z',
@@ -938,6 +1040,7 @@ describe('agent hook runtime', () => {
     await expect(handleAgentHook(root, 'codex', { ...prompt, hook_event_name: 'Stop', stop_hook_active: true }, config(), dependencies)).resolves.toBeUndefined()
     expect(runReview).toHaveBeenCalledTimes(1)
     expect(requests[0]).toMatchObject({
+      surface: 'codex',
       startCommit: git(root, 'rev-parse', 'HEAD'),
       finalHead: git(root, 'rev-parse', 'HEAD'),
       startedAt: startedAt.toISOString(),
@@ -953,6 +1056,7 @@ describe('agent hook runtime', () => {
     await expect(readHookTurnContext(requests[0].contextPath, requests[0].contextSha256)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(hookReviewEnvironment(requests[0], {} as NodeJS.ProcessEnv)).toEqual({
       CODETRUSS_INTERNAL_HOOK: '1',
+      [CODETRUSS_HOOK_SURFACE_ENV]: 'codex',
       CODETRUSS_HOOK_START_COMMIT: git(root, 'rev-parse', 'HEAD'),
       CODETRUSS_HOOK_END_COMMIT: git(root, 'rev-parse', 'HEAD'),
       CODETRUSS_HOOK_STARTED_AT: startedAt.toISOString(),
@@ -2279,5 +2383,39 @@ describe('agent hook runtime', () => {
     })).resolves.toBeUndefined()
     expect(rerunReview).toHaveBeenCalledTimes(1)
     await expect(stat(join(secondTurn, 'object-store'))).rejects.toMatchObject({ code: 'ENOENT' })
+  }, 30_000)
+
+  it('reports the actionable child-process error when no review result was produced', async () => {
+    const root = await repo('codetruss-hook-missing-result-')
+    await writeConfig(root)
+    const prompt = {
+      session_id: 'missing-result-session',
+      turn_id: 'missing-result-turn',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Review with an untrusted command policy',
+      cwd: root,
+    }
+    await expect(handleAgentHook(root, 'codex', prompt, config())).resolves.toBeUndefined()
+    await writeFile(join(root, 'README.md'), 'changed\n')
+
+    const result = await handleAgentHook(root, 'codex', {
+      ...prompt,
+      hook_event_name: 'Stop',
+      background_tasks: [],
+    }, config(), {
+      runReview: async () => ({
+        status: 3,
+        stdout: '',
+        stderr: 'codetruss: repository verification commands are not trusted; inspect them first',
+      }),
+    })
+
+    expect(result).toEqual({
+      decision: 'block',
+      reason: expect.stringContaining(
+        'review process failed before producing a receipt: codetruss: repository verification commands are not trusted',
+      ),
+    })
+    expect((result as { reason: string }).reason).not.toContain('ENOENT')
   }, 30_000)
 })

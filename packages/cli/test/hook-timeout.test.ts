@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -14,6 +14,10 @@ describe('installed agent hook deadlines', () => {
   it.each(['claude', 'codex'] as const)('gives the %s Stop envelope headroom beyond its five-minute child review', async (surface) => {
     const root = await mkdtemp(join(tmpdir(), 'codetruss-hook-timeout-'))
     temporaryDirectories.push(root)
+    await mkdir(join(root, 'node_modules', '.bin'), { recursive: true })
+    const localCli = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
+    await writeFile(localCli, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
+    await chmod(localCli, 0o755)
     await writeFile(join(root, '.codetruss.yml'), 'version: 1\nallow:\n  - src/**\ndeny: []\nverify: []\n')
 
     await installHooks(root, surface)

@@ -2,6 +2,10 @@ import type { AnalyzerFinding, AnalyzerPass, RepoIndex, Scores } from '@codetrus
 
 export type Verdict = 'PASS' | 'REVIEW_REQUIRED' | 'FAILED'
 export type ScopeClassification = 'allowed' | 'denied' | 'unexpected'
+export const RECEIPT_INVOCATION_KINDS = ['manual_run', 'manual_review', 'pre_commit', 'agent_hook'] as const
+export type ReceiptInvocationKind = typeof RECEIPT_INVOCATION_KINDS[number]
+export const AGENT_HOOK_SURFACES = ['claude', 'codex'] as const
+export type AgentHookReceiptSurface = typeof AGENT_HOOK_SURFACES[number]
 export const LLM_PROVIDERS = ['anthropic', 'openai', 'claude'] as const
 export type LlmProvider = typeof LLM_PROVIDERS[number]
 /** `codex` remains readable so pre-0.2 repository config does not break deterministic commands. */
@@ -101,6 +105,14 @@ export interface Receipt {
   finishedAt: string
   durationMs: number
   mode: 'run' | 'review'
+  /**
+   * How this receipt was invoked. Optional only for signed receipt-v1 files
+   * issued before provenance was introduced; every current receipt includes it.
+  */
+  invocation?:
+    | { kind: 'manual_run' | 'manual_review'; provenance: 'direct'; cliVersion: string }
+    | { kind: 'pre_commit'; provenance: 'self_attested'; cliVersion: string }
+    | { kind: 'agent_hook'; provenance: 'hook_context'; surface: AgentHookReceiptSurface; cliVersion: string }
   task: string
   repoRoot: string
   startCommit: string

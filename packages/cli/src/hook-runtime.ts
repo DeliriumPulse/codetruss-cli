@@ -62,6 +62,7 @@ interface CurrentTurn {
 
 export interface HookReviewRequest {
   root: string
+  surface: AgentHookSurface
   task: string
   /** Raw private-store commit OID accepted by Git wherever a treeish is accepted. */
   baselineRef: string
@@ -83,6 +84,8 @@ export interface HookReviewRequest {
 
 export interface HookTurnContext {
   version: 1
+  /** Optional only while reading prompt contexts captured by older CLI builds. */
+  surface?: AgentHookSurface
   task: string
   config: CliConfig
   baselineDirtyFiles: string[]
@@ -116,6 +119,7 @@ const LEGACY_PATH_KEY_PATTERN = /^(?:[0-9a-f]{24}|[0-9a-f]{64})$/
 export const CODETRUSS_HOOK_CONTEXT_PATH_ENV = 'CODETRUSS_HOOK_CONTEXT_PATH'
 export const CODETRUSS_HOOK_CONTEXT_SHA256_ENV = 'CODETRUSS_HOOK_CONTEXT_SHA256'
 export const CODETRUSS_HOOK_BASELINE_DIRTY_FILES_SHA256_ENV = 'CODETRUSS_HOOK_BASELINE_DIRTY_FILES_SHA256'
+export const CODETRUSS_HOOK_SURFACE_ENV = 'CODETRUSS_HOOK_SURFACE'
 
 function hash(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex')
@@ -376,6 +380,7 @@ function validateHookTurnContext(value: unknown): HookTurnContext {
   const config = context.config as Partial<CliConfig> | undefined
   if (context.version !== 1 || typeof context.task !== 'string'
     || !context.task.trim() || context.task !== context.task.trim() || context.task.length > MAX_TASK_CHARS
+    || (context.surface !== undefined && context.surface !== 'claude' && context.surface !== 'codex')
     || !config || config.version !== 1
     || !isStringArray(config.allow) || !isStringArray(config.deny) || !isStringArray(config.verify)
     || !config.receipts || typeof config.receipts.dir !== 'string'
@@ -1429,6 +1434,7 @@ async function capturePromptBaseline(
       const baseline = await (dependencies.captureBaseline ?? createExactSnapshotCommit)(root, join(turnDir, 's'), objectStore)
       const context: HookTurnContext = {
         version: 1,
+        surface,
         task,
         config: frozenConfig(config),
         baselineDirtyFiles: [...baseline.dirtyFiles],
@@ -1537,6 +1543,7 @@ export function hookReviewEnvironment(
   return {
     ...base,
     CODETRUSS_INTERNAL_HOOK: '1',
+    [CODETRUSS_HOOK_SURFACE_ENV]: request.surface,
     CODETRUSS_HOOK_START_COMMIT: request.startCommit,
     CODETRUSS_HOOK_END_COMMIT: request.finalHead,
     CODETRUSS_HOOK_STARTED_AT: request.startedAt,
@@ -1701,10 +1708,13 @@ async function reviewSummary(
     const processLog = result
       ? (result.error || result.stderr || result.stdout || `review exited with status ${String(result.status)}`).trim()
       : ''
-    const processDetail = processLog ? ` Review process detail: ${safeError(processLog)}` : ''
+    const missingResult = (error as NodeJS.ErrnoException).code === 'ENOENT'
+    const primary = missingResult && processLog
+      ? `review process failed before producing a receipt: ${safeError(processLog)}`
+      : `${safeError(error)}${processLog ? `. Review process detail: ${safeError(processLog)}` : ''}`
     return {
       verdict: 'ERROR',
-      message: `CodeTruss hook review could not produce a verified receipt: ${safeError(error)}.${processDetail}`,
+      message: `CodeTruss hook review could not produce a verified receipt: ${primary}`,
     }
   }
   const expectedStatuses = { PASS: 0, REVIEW_REQUIRED: 1, FAILED: 2 } as const
@@ -1958,6 +1968,7 @@ async function reviewAtStop(
       } else {
         const result = await (dependencies.runReview ?? defaultRunReview)({
           root,
+          surface,
           task,
           baselineRef: baselineCommit,
           finalRef: finalCommit,

@@ -3,6 +3,95 @@
 CodeTruss CLI follows semantic versioning. Release artifacts and their SHA-256
 checksums are published at <https://codetruss.com/downloads/codetruss-cli-latest.json>.
 
+## Unreleased
+
+## 0.2.24 — 2026-07-15
+
+- Ship the guided setup, local evidence privacy, invocation provenance,
+  aggregate metrics, reproducible packaging, and Windows setup corrections
+  accumulated in the unpublished 0.2.15 through 0.2.23 candidates.
+- Enforce exact owner-only permissions for existing and newly created local
+  evidence directories, including restrictive-umask environments.
+- Make hook health, verification fingerprints, and command-line validation
+  fail closed without rejecting healthy pre-commit-only configurations.
+
+## 0.2.23 — 2026-07-14 (unpublished)
+
+- Ship the guided setup, local evidence privacy, invocation provenance,
+  aggregate metrics, reproducible packaging, and Windows setup corrections
+  accumulated in the unpublished 0.2.15 through 0.2.22 candidates.
+
+## 0.2.22 — 2026-07-14 (unpublished)
+
+- Resolve Windows package-manager shims through shell-free PATH/PATHEXT
+  inspection before the first public release of the guided setup changes.
+
+## 0.2.21 — 2026-07-14 (unpublished)
+
+- Detect `pnpm`, `npm`, and `yarn` command shims correctly during guided setup
+  on Windows.
+- Make cross-platform hook tests provision the persistent local CLI that the
+  production hook installer intentionally requires.
+
+## 0.2.20 — 2026-07-14 (unpublished)
+
+- Ship the guided setup, local evidence privacy, hook guidance, invocation
+  provenance, aggregate local metrics, and reproducible-build hardening from
+  the unpublished v0.2.15 through v0.2.19 candidates.
+- Correct the candidate release history before publishing these changes for the
+  first time.
+
+## 0.2.19 — 2026-07-14 (unpublished)
+
+- Preserve the privacy, setup, and reproducible-build hardening from the
+  unpublished v0.2.18 candidate.
+- Give a repository that already completed setup the next relevant automatic
+  hook action after its first receipt instead of sending it through setup again.
+
+## 0.2.18 — 2026-07-14 (unpublished)
+
+- Preserve the privacy protection, guided setup, and deterministic release
+  hardening from the unpublished v0.2.17 candidate.
+- Make bundled release bytes independent of both the physical workspace path
+  and the directory from which the build command is invoked, with byte-for-byte
+  regression coverage across package and repository working directories.
+
+## 0.2.17 — 2026-07-14 (unpublished)
+
+- Preserve the privacy protection, guided setup, and cross-platform hook
+  diagnostics from the unpublished v0.2.16 candidate.
+- Make bundled release bytes independent of whether a workspace dependency tree
+  is physical or symlinked, after the immutable artifact verifier caught the
+  same source producing path-dependent esbuild labels across two worktrees.
+
+## 0.2.16 — 2026-07-14 (unpublished)
+
+- Add `codetruss setup`, a guided local-only path that proposes scoped source
+  roots, displays detected verification commands and their exact trust
+  fingerprint, installs automatic checks, runs hook health diagnostics, and
+  calls out the remaining one-time Codex `/hooks` approval.
+- Make first-receipt guidance match the actual verdict and direct future
+  automation through the one-command setup path.
+- Keep receipts, raw patches, signatures, temporary receipt files, and the
+  generated agent runner out of Git through a verified local exclude rule;
+  fail closed for tracked evidence, conflicting ignore rules, or unsafe Git
+  metadata paths.
+- Recognize symlinked local `node_modules` installations in isolated verifier
+  snapshots and allow manual trusted checks up to five minutes while retaining
+  the shorter shared automatic-hook work budget.
+- Surface the actionable verifier error when a hook cannot produce a receipt.
+
+## 0.2.15 — 2026-07-14 (unpublished)
+
+- Record typed manual, pre-commit, and Claude/Codex hook invocation provenance
+  on new signed receipts while keeping older receipt-v1 files and explicit sync
+  compatible.
+- Add `codetruss metrics --json`, a network-free aggregate over verified local
+  receipts with aggregate UTC dates, active-day count, verdict, invocation,
+  D7 receipt-pattern, and hook-health fields only.
+  It emits no repository, task, path, finding, command, diff, receipt ID, or
+  signing-key data.
+
 ## 0.2.14 — 2026-07-14
 
 - Give the deterministic CycloneDX SBOM a canonical UUIDv5 serial number and

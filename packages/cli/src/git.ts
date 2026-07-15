@@ -6,7 +6,7 @@ import type { ChangedFile, ScopeClassification, VerificationResult } from './typ
 import { runGit, runGitText, streamGit, type GitStreamOptions } from './git-process.js'
 
 const DEFAULT_DIFF_CAPTURE_BYTES = 20 * 1024 * 1024
-export const VERIFICATION_TIMEOUT_MS = 2 * 60 * 1_000
+export const VERIFICATION_TIMEOUT_MS = 5 * 60 * 1_000
 export const INTERNAL_HOOK_WORK_BUDGET_MS = 3 * 60 * 1_000 + 30 * 1_000
 const VERIFICATION_OUTPUT_MARKER = Buffer.from('\n… output truncated …\n')
 const VERIFICATION_TERMINATION_GRACE_MS = 150

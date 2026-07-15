@@ -11,6 +11,9 @@ importers:
       '@codetruss/analyzer-engine':
         specifier: workspace:*
         version: link:packages/analyzer-engine
+      '@codetruss/cli':
+        specifier: workspace:*
+        version: link:packages/cli
 
   packages/analyzer-engine: {}
 
