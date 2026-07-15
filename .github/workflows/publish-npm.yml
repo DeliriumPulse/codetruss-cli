@@ -18,19 +18,22 @@ on:
 permissions: {}
 
 concurrency:
-  group: npm-${{ inputs.tag }}
+  group: npm-publish
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish verified GitHub release
-    if: ${{ inputs.confirm_publish }}
+  verify:
+    name: Verify GitHub release
+    if: ${{ inputs.confirm_publish && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: npm
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      archive_name: ${{ steps.package.outputs.archive_name }}
+      archive_sha256: ${{ steps.package.outputs.archive_sha256 }}
+      artifact_id: ${{ steps.handoff.outputs.artifact-id }}
+      package_version: ${{ steps.package.outputs.package_version }}
     env:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
@@ -49,12 +52,15 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@10.28.2 --activate
-          npm install --global npm@12.0.1
-          npm --version
+          npm install --global --ignore-scripts --no-audit --no-fund npm@12.0.1
+          test "$(npm --version)" = "12.0.1"
       - name: Require an exact release tag
         run: |
           node - <<'NODE'
           const pkg = require('./packages/cli/package.json')
+          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(pkg.version)) {
+            throw new Error(`package version ${pkg.version} is not a stable canonical semver`)
+          }
           const expected = `v${pkg.version}`
           if (process.env.RELEASE_TAG !== expected) {
             throw new Error(`requested tag ${process.env.RELEASE_TAG} does not match ${expected}`)
@@ -62,8 +68,6 @@ jobs:
           NODE
           TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
           test "$(git rev-parse HEAD)" = "$TAG_COMMIT"
-      - name: Install locked dependencies
-        run: pnpm install --frozen-lockfile
       - name: Download the existing GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,13 +95,10 @@ jobs:
           }
           NODE
           rm release.json
-      - name: Verify exact release bytes
+      - name: Verify release provenance
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pnpm build
-          pnpm release:verify
-          pnpm test:install
           VERSION="$(node -p "require('./packages/cli/package.json').version")"
           TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
           gh attestation verify "release/codetruss-cli-${VERSION}.tgz" \
@@ -106,19 +107,120 @@ jobs:
             --source-ref "refs/tags/${RELEASE_TAG}" \
             --source-digest "$TAG_COMMIT" \
             --deny-self-hosted-runners
-      - name: Dry-run the exact npm package path
+      - name: Resolve the verified package identity
+        id: package
         run: |
-          VERSION="$(node -p "require('./packages/cli/package.json').version")"
-          npm publish "./release/codetruss-cli-${VERSION}.tgz" \
+          node - <<'NODE'
+          const { createHash } = require('node:crypto')
+          const { appendFileSync, readFileSync } = require('node:fs')
+          const pkg = require('./packages/cli/package.json')
+          const archiveName = `codetruss-cli-${pkg.version}.tgz`
+          const archive = readFileSync(`release/${archiveName}`)
+          const archiveSha256 = createHash('sha256').update(archive).digest('hex')
+          appendFileSync(process.env.GITHUB_OUTPUT, `archive_name=${archiveName}\n`)
+          appendFileSync(process.env.GITHUB_OUTPUT, `archive_sha256=${archiveSha256}\n`)
+          appendFileSync(process.env.GITHUB_OUTPUT, `package_version=${pkg.version}\n`)
+          NODE
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify exact release bytes
+        run: |
+          pnpm build
+          pnpm release:verify
+          pnpm test:install
+      - name: Dry-run the exact npm package path
+        env:
+          ARCHIVE_NAME: ${{ steps.package.outputs.archive_name }}
+        run: |
+          npm publish "./release/${ARCHIVE_NAME}" \
             --dry-run \
             --access public \
-            --registry=https://registry.npmjs.org \
-            --tag=latest
-      - name: Publish with npm trusted publishing
+            --ignore-scripts \
+            --registry=https://registry.npmjs.org
+      - name: Require the verified archive to remain unchanged
+        env:
+          ARCHIVE_NAME: ${{ steps.package.outputs.archive_name }}
+          ARCHIVE_SHA256: ${{ steps.package.outputs.archive_sha256 }}
+        run: echo "${ARCHIVE_SHA256}  release/${ARCHIVE_NAME}" | /usr/bin/sha256sum --check --strict
+      - name: Upload the exact verified package
+        id: handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: release/${{ steps.package.outputs.archive_name }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+      - name: Require the handoff digest to match the package
+        env:
+          ARCHIVE_SHA256: ${{ steps.package.outputs.archive_sha256 }}
+          ARTIFACT_SHA256: ${{ steps.handoff.outputs.artifact-digest }}
+        run: test "$ARTIFACT_SHA256" = "$ARCHIVE_SHA256"
+
+  publish:
+    name: Publish verified package
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      id-token: write
+    steps:
+      - name: Validate the verified handoff identity
+        env:
+          ARCHIVE_NAME: ${{ needs.verify.outputs.archive_name }}
+          ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}
+          ARTIFACT_ID: ${{ needs.verify.outputs.artifact_id }}
+          PACKAGE_VERSION: ${{ needs.verify.outputs.package_version }}
         run: |
-          VERSION="$(node -p "require('./packages/cli/package.json').version")"
-          npm publish "./release/codetruss-cli-${VERSION}.tgz" \
+          [[ "$PACKAGE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$ARCHIVE_NAME" = "codetruss-cli-${PACKAGE_VERSION}.tgz"
+          [[ "$ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+      - name: Download the exact verified package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact_id }}
+          path: release
+          digest-mismatch: error
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Verify the downloaded package identity
+        env:
+          ARCHIVE_NAME: ${{ needs.verify.outputs.archive_name }}
+          ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}
+          PACKAGE_VERSION: ${{ needs.verify.outputs.package_version }}
+        run: |
+          test "$(find release -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" = "1"
+          test -z "$(find release -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          test -f "release/${ARCHIVE_NAME}"
+          echo "${ARCHIVE_SHA256}  release/${ARCHIVE_NAME}" | /usr/bin/sha256sum --check --strict
+          tar -xOf "release/${ARCHIVE_NAME}" package/package.json > release/package.json
+          PACKAGE_VERSION="$PACKAGE_VERSION" node - <<'NODE'
+          const manifest = require('./release/package.json')
+          if (manifest.name !== '@codetruss/cli' || manifest.version !== process.env.PACKAGE_VERSION) {
+            throw new Error(`unexpected package identity ${manifest.name}@${manifest.version}`)
+          }
+          const publishConfig = Object.entries(manifest.publishConfig ?? {})
+          if (publishConfig.length !== 1
+            || publishConfig[0]?.[0] !== 'access'
+            || publishConfig[0]?.[1] !== 'public') {
+            throw new Error('package publishConfig must contain only public access')
+          }
+          NODE
+          rm release/package.json
+      - name: Activate pinned npm
+        run: |
+          npm install --global --ignore-scripts --no-audit --no-fund npm@12.0.1
+          test "$(npm --version)" = "12.0.1"
+      - name: Publish with npm trusted publishing
+        env:
+          ARCHIVE_NAME: ${{ needs.verify.outputs.archive_name }}
+        run: |
+          npm publish "./release/${ARCHIVE_NAME}" \
             --access public \
+            --ignore-scripts \
             --provenance \
-            --registry=https://registry.npmjs.org \
-            --tag=latest
+            --registry=https://registry.npmjs.org
