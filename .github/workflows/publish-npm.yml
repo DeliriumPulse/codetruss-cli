@@ -70,10 +70,15 @@ jobs:
         run: |
           mkdir release
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets > release-assets.json
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets,isDraft,isImmutable,isPrerelease,tagName > release.json
           node - <<'NODE'
-          const { assets } = require('./release-assets.json')
+          const release = require('./release.json')
           const version = require('./packages/cli/package.json').version
+          if (release.isDraft || release.isPrerelease || !release.isImmutable || release.tagName !== process.env.RELEASE_TAG) {
+            throw new Error(`release ${process.env.RELEASE_TAG} is not the exact immutable public release`)
+          }
+          const { assets } = release
           const actual = assets.map((asset) => asset.name).sort()
           const expected = [
             `codetruss-cli-${version}.sbom.cdx.json`,
@@ -85,7 +90,7 @@ jobs:
             throw new Error(`release assets differ from the exact publish set: ${actual.join(', ')}`)
           }
           NODE
-          rm release-assets.json
+          rm release.json
       - name: Verify exact release bytes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -94,7 +99,13 @@ jobs:
           pnpm release:verify
           pnpm test:install
           VERSION="$(node -p "require('./packages/cli/package.json').version")"
-          gh attestation verify "release/codetruss-cli-${VERSION}.tgz" --repo "$GITHUB_REPOSITORY"
+          TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          gh attestation verify "release/codetruss-cli-${VERSION}.tgz" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "refs/tags/${RELEASE_TAG}" \
+            --source-digest "$TAG_COMMIT" \
+            --deny-self-hosted-runners
       - name: Dry-run the exact npm package path
         run: |
           VERSION="$(node -p "require('./packages/cli/package.json').version")"
