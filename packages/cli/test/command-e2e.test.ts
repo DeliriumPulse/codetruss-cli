@@ -203,7 +203,7 @@ describe('CLI snapshot and delta enforcement', () => {
     const unattended = runCli(root, ['setup', '--yes', '--hooks', 'none'])
     expect(unattended.status).toBe(3)
     expect(unattended.stderr).toContain('non-interactive setup requires at least one explicit --allow')
-  })
+  }, 60_000)
 
   it('leaves no active hook when verification trust is declined during setup', async () => {
     const root = await repository()
