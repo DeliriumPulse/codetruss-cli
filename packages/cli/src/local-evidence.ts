@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
-import { lstat, mkdir, open, realpath, unlink } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, realpath, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { runGit, runGitText } from './git-process.js'
 
@@ -119,21 +119,44 @@ async function safelyEnsureExclude(path: string): Promise<boolean> {
   }
 }
 
-async function ensurePrivateDirectory(path: string): Promise<void> {
-  try {
-    const metadata = await lstat(path)
+async function validatePrivateDirectory(path: string): Promise<void> {
+  let metadata = await lstat(path)
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error(`refusing non-directory local evidence path ${path}`)
+  }
+  if (process.platform === 'win32') return
+  if ((metadata.mode & 0o400) === 0) {
+    await chmod(path, 0o700)
+    metadata = await lstat(path)
     if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
       throw new Error(`refusing non-directory local evidence path ${path}`)
     }
+  }
+  const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0
+  const directoryOnly = typeof fsConstants.O_DIRECTORY === 'number' ? fsConstants.O_DIRECTORY : 0
+  const handle = await open(path, fsConstants.O_RDONLY | noFollow | directoryOnly)
+  try {
+    const opened = await handle.stat()
+    if (!opened.isDirectory()) throw new Error(`refusing non-directory local evidence path ${path}`)
+    if ((opened.mode & 0o777) !== 0o700) await handle.chmod(0o700)
+    if (((await handle.stat()).mode & 0o777) !== 0o700) {
+      throw new Error(`could not restrict local evidence directory permissions ${path}`)
+    }
+  } finally {
+    await handle.close()
+  }
+}
+
+async function ensurePrivateDirectory(path: string): Promise<void> {
+  try {
+    await validatePrivateDirectory(path)
     return
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
   await mkdir(path, { mode: 0o700 })
-  const metadata = await lstat(path)
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-    throw new Error(`refusing non-directory local evidence path ${path}`)
-  }
+  if (process.platform !== 'win32') await chmod(path, 0o700)
+  await validatePrivateDirectory(path)
 }
 
 async function ensureEvidenceDirectories(root: string): Promise<string> {

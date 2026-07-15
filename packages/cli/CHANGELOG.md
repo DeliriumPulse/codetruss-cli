@@ -5,7 +5,17 @@ checksums are published at <https://codetruss.com/downloads/codetruss-cli-latest
 
 ## Unreleased
 
-## 0.2.23 — 2026-07-14
+## 0.2.24 — 2026-07-15
+
+- Ship the guided setup, local evidence privacy, invocation provenance,
+  aggregate metrics, reproducible packaging, and Windows setup corrections
+  accumulated in the unpublished 0.2.15 through 0.2.23 candidates.
+- Enforce exact owner-only permissions for existing and newly created local
+  evidence directories, including restrictive-umask environments.
+- Make hook health, verification fingerprints, and command-line validation
+  fail closed without rejecting healthy pre-commit-only configurations.
+
+## 0.2.23 — 2026-07-14 (unpublished)
 
 - Ship the guided setup, local evidence privacy, invocation provenance,
   aggregate metrics, reproducible packaging, and Windows setup corrections

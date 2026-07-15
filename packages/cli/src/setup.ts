@@ -187,11 +187,13 @@ export async function guidedSetup(root: string, options: GuidedSetupOptions = {}
     }
 
     const selectedHooks = await resolveHookTarget(requestedHooks, yes, ask)
-    if (config.verify.length && (selectedHooks !== 'none' || options.trustVerify)) {
+    if (config.verify.length) {
       const currentTrust = await verifyCommandTrustStatus(root, config.verify)
       write(`Verification fingerprint: ${currentTrust.hash}\n`)
       if (currentTrust.trusted) {
         write('Verification commands are already trusted for this repository path.\n')
+      } else if (selectedHooks === 'none' && !options.trustVerify) {
+        write('Verification commands remain untrusted; after inspection, run codetruss verify-policy trust before reviews execute them.\n')
       } else {
         if (options.trustVerify) {
           await trustVerifyCommands(root, config.verify)

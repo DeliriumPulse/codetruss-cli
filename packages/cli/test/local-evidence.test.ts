@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -46,7 +46,7 @@ describe('local evidence Git protection', () => {
     expect(first.changed).toBe(true)
     expect(second).toEqual({ excludePath: first.excludePath, changed: false })
     const exclude = await readFile(first.excludePath, 'utf8')
-    expect(exclude.match(new RegExp(LOCAL_EVIDENCE_EXCLUDE_PATTERN.replaceAll('/', '\\/'), 'g'))).toHaveLength(1)
+    expect(exclude.split(/\r?\n/).filter((line) => line === LOCAL_EVIDENCE_EXCLUDE_PATTERN)).toHaveLength(1)
 
     await mkdir(join(root, '.codetruss', 'receipts'), { recursive: true })
     await writeFile(join(root, '.codetruss', 'receipts', 'private.patch'), 'private source diff\n')
@@ -57,6 +57,39 @@ describe('local evidence Git protection', () => {
     expect(git(root, 'check-ignore', '--no-index', '.codetruss/receipts/private.patch')).toBe(
       '.codetruss/receipts/private.patch',
     )
+  })
+
+  it.skipIf(process.platform === 'win32')('tightens existing local evidence directories to owner-only permissions', async () => {
+    const root = await repository()
+    const evidence = join(root, '.codetruss')
+    const receipts = join(evidence, 'receipts')
+    const snapshots = join(evidence, 'snapshots')
+    await mkdir(receipts, { recursive: true })
+    await mkdir(snapshots)
+    await chmod(evidence, 0o300)
+    await chmod(receipts, 0o500)
+    await chmod(snapshots, 0o000)
+
+    await ensureLocalEvidenceProtected(root)
+
+    for (const path of [evidence, receipts, snapshots, join(evidence, 'hooks')]) {
+      expect((await stat(path)).mode & 0o777).toBe(0o700)
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('creates owner-only evidence directories under a restrictive umask', async () => {
+    const root = await repository()
+    const previous = process.umask(0o777)
+    try {
+      await ensureLocalEvidenceProtected(root)
+    } finally {
+      process.umask(previous)
+    }
+
+    const evidence = join(root, '.codetruss')
+    for (const path of [evidence, join(evidence, 'receipts'), join(evidence, 'snapshots'), join(evidence, 'hooks')]) {
+      expect((await stat(path)).mode & 0o777).toBe(0o700)
+    }
   })
 
   it('adds defense-in-depth local protection even when the repository already ignores evidence', async () => {

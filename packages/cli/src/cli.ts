@@ -53,6 +53,30 @@ import { guidedSetup } from './setup.js'
 
 interface Parsed { command: string; positionals: string[]; values: Map<string, string[]>; booleans: Set<string>; agent: string[] }
 
+interface CommandOptionSchema {
+  values?: readonly string[]
+  booleans?: readonly string[]
+  maxPositionals: number
+  agent: 'required' | 'forbidden'
+}
+
+const COMMAND_OPTION_SCHEMAS: Readonly<Record<string, CommandOptionSchema>> = {
+  help: { maxPositionals: 0, agent: 'forbidden' },
+  version: { maxPositionals: 0, agent: 'forbidden' },
+  auth: { maxPositionals: 1, agent: 'forbidden' },
+  setup: { values: ['allow', 'deny', 'hooks'], booleans: ['yes', 'trust-verify'], maxPositionals: 0, agent: 'forbidden' },
+  init: { values: ['allow', 'deny'], booleans: ['force'], maxPositionals: 0, agent: 'forbidden' },
+  run: { values: ['task', 'allow', 'deny', 'verify', 'provider'], booleans: ['llm', 'no-verify', 'staged'], maxPositionals: 0, agent: 'required' },
+  review: { values: ['task', 'allow', 'deny', 'verify', 'provider', 'base', 'final'], booleans: ['llm', 'no-verify', 'staged'], maxPositionals: 0, agent: 'forbidden' },
+  report: { booleans: ['json'], maxPositionals: 1, agent: 'forbidden' },
+  list: { booleans: ['json'], maxPositionals: 0, agent: 'forbidden' },
+  metrics: { booleans: ['json'], maxPositionals: 0, agent: 'forbidden' },
+  verify: { maxPositionals: 1, agent: 'forbidden' },
+  'verify-policy': { maxPositionals: 1, agent: 'forbidden' },
+  sync: { booleans: ['dry-run'], maxPositionals: 1, agent: 'forbidden' },
+  hooks: { maxPositionals: 2, agent: 'forbidden' },
+}
+
 interface EvidenceTarget {
   baselineTreeish: string
   finalTreeish: string
@@ -86,13 +110,42 @@ function parse(argv: string[]): Parsed {
   for (let i = 0; i < before.length; i++) {
     const item = before[i]
     if (!item.startsWith('--')) { positionals.push(item); continue }
-    const [name, inline] = item.slice(2).split('=', 2)
-    if (booleanNames.has(name)) { booleans.add(name); continue }
+    const option = item.slice(2)
+    const equals = option.indexOf('=')
+    const name = equals === -1 ? option : option.slice(0, equals)
+    const inline = equals === -1 ? undefined : option.slice(equals + 1)
+    if (booleanNames.has(name)) {
+      if (inline !== undefined) throw new Error(`--${name} does not accept a value`)
+      booleans.add(name)
+      continue
+    }
     const value = inline ?? before[++i]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${name} requires a value`)
+    if (!value.trim()) throw new Error(`--${name} requires a non-empty value`)
     values.set(name, [...(values.get(name) ?? []), value])
   }
   return { command, positionals, values, booleans, agent }
+}
+
+function assertSupportedOptions(parsed: Parsed): void {
+  const schema = COMMAND_OPTION_SCHEMAS[parsed.command]
+  if (!schema) throw new Error(`unknown command ${parsed.command}\n\n${help()}`)
+  const allowedValues = new Set(schema.values ?? [])
+  const allowedBooleans = new Set(['help', ...(schema.booleans ?? [])])
+  const unsupported = [
+    ...[...parsed.values.keys()].filter((name) => !allowedValues.has(name)).map((name) => `--${name}`),
+    ...[...parsed.booleans].filter((name) => !allowedBooleans.has(name)).map((name) => `--${name}`),
+  ]
+  if (unsupported.length) throw new Error(`${parsed.command} does not accept ${unsupported.join(', ')}`)
+  if (parsed.booleans.has('help')) return
+  if (parsed.positionals.length > schema.maxPositionals) {
+    throw new Error(`${parsed.command} does not accept ${schema.maxPositionals === 0 ? 'positional arguments' : `more than ${schema.maxPositionals} positional argument${schema.maxPositionals === 1 ? '' : 's'}`}`)
+  }
+  if (schema.agent === 'forbidden' && parsed.agent.length) throw new Error(`${parsed.command} does not accept a command after --`)
+  if (schema.agent === 'required' && !parsed.agent.length) throw new Error(`${parsed.command} requires an agent command after --`)
+  if ((parsed.command === 'run' || parsed.command === 'review') && parsed.booleans.has('no-verify') && parsed.values.has('verify')) {
+    throw new Error('--no-verify cannot be combined with --verify')
+  }
 }
 
 function one(parsed: Parsed, name: string): string | undefined { return parsed.values.get(name)?.at(-1) }
@@ -604,6 +657,10 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
   if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') { process.stdout.write(`${help()}\n`); return 0 }
   if (argv[0] === '--version' || argv[0] === '-v') { process.stdout.write(`codetruss ${CLI_VERSION}\n`); return 0 }
   const parsed = parse(argv)
+  if (parsed.booleans.has('trust-verify') && parsed.command !== 'setup') {
+    throw new Error('--trust-verify is accepted only by codetruss setup')
+  }
+  assertSupportedOptions(parsed)
   if (parsed.command === 'help' || parsed.booleans.has('help')) { process.stdout.write(`${help()}\n`); return 0 }
   if (parsed.command === 'version') { process.stdout.write(`codetruss ${CLI_VERSION}\n`); return 0 }
   if (parsed.command === 'auth') {
@@ -640,13 +697,6 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
   const root = findRepoRoot()
   if (parsed.command === 'setup') {
     if (parsed.positionals.length || parsed.agent.length) throw new Error('setup does not accept positional arguments or a command after --')
-    const allowedValues = new Set(['allow', 'deny', 'hooks'])
-    const allowedBooleans = new Set(['yes', 'trust-verify'])
-    const unsupported = [
-      ...[...parsed.values.keys()].filter((name) => !allowedValues.has(name)).map((name) => `--${name}`),
-      ...[...parsed.booleans].filter((name) => !allowedBooleans.has(name)).map((name) => `--${name}`),
-    ]
-    if (unsupported.length) throw new Error(`setup does not accept ${unsupported.join(', ')}`)
     return guidedSetup(root, {
       allow: parsed.values.get('allow'),
       deny: parsed.values.get('deny'),

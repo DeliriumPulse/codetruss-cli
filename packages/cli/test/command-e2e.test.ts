@@ -149,6 +149,57 @@ describe('CLI snapshot and delta enforcement', () => {
     expect(forced.status).toBe(3)
     expect(forced.stderr).toContain('setup does not accept --force')
 
+    const misplacedTrust = runCli(root, ['review', '--trust-verify', '--task', 'Review the current change', '--no-verify'])
+    expect(misplacedTrust.status).toBe(3)
+    expect(misplacedTrust.stderr).toContain('--trust-verify is accepted only by codetruss setup')
+
+    const typoHelp = runCli(root, ['revie', '--help'])
+    expect(typoHelp.status).toBe(3)
+    expect(typoHelp.stderr).toContain('unknown command revie')
+
+    const versionOption = runCli(root, ['version', '--json'])
+    expect(versionOption.status).toBe(3)
+    expect(versionOption.stderr).toContain('version does not accept --json')
+
+    const helpOption = runCli(root, ['help', '--llm'])
+    expect(helpOption.status).toBe(3)
+    expect(helpOption.stderr).toContain('help does not accept --llm')
+
+    const commandHelp = runCli(root, ['run', '--help'])
+    expect(commandHelp.status).toBe(0)
+    expect(commandHelp.stdout).toContain('codetruss run --task')
+
+    for (const args of [
+      ['review', '--llm=false', '--task', 'Review the current change', '--no-verify'],
+      ['review', '--no-verify=false', '--task', 'Review the current change'],
+      ['setup', '--trust-verify=false', '--allow', 'src/**', '--hooks', 'none'],
+    ]) {
+      const inlineBoolean = runCli(root, args)
+      expect(inlineBoolean.status).toBe(3)
+      expect(inlineBoolean.stderr).toContain('does not accept a value')
+    }
+
+    const misspelledVerify = runCli(root, ['review', '--verfy', 'npm test', '--task', 'Review the current change', '--no-verify'])
+    expect(misspelledVerify.status).toBe(3)
+    expect(misspelledVerify.stderr).toContain('review does not accept --verfy')
+
+    const blankVerify = runCli(root, ['review', '--verify', '   ', '--task', 'Review the current change'])
+    expect(blankVerify.status).toBe(3)
+    expect(blankVerify.stderr).toContain('--verify requires a non-empty value')
+
+    const conflictingVerify = runCli(root, ['review', '--verify', 'npm test', '--no-verify', '--task', 'Review the current change'])
+    expect(conflictingVerify.status).toBe(3)
+    expect(conflictingVerify.stderr).toContain('--no-verify cannot be combined with --verify')
+
+    const extraReportId = runCli(root, ['report', 'latest', 'extra'])
+    expect(extraReportId.status).toBe(3)
+    expect(extraReportId.stderr).toContain('report does not accept more than 1 positional argument')
+
+    const equalsRoot = await repository()
+    const equalsValue = runCli(equalsRoot, ['setup', '--yes', '--allow=src/**=literal', '--hooks', 'none'])
+    expect(equalsValue.status, `${equalsValue.stderr}\n${equalsValue.stdout}`).toBe(0)
+    expect(await readFile(join(equalsRoot, '.codetruss.yml'), 'utf8')).toContain('src/**=literal')
+
     const unattended = runCli(root, ['setup', '--yes', '--hooks', 'none'])
     expect(unattended.status).toBe(3)
     expect(unattended.stderr).toContain('non-interactive setup requires at least one explicit --allow')
@@ -181,6 +232,16 @@ describe('CLI snapshot and delta enforcement', () => {
       private: true,
       scripts: { test: 'node -e ""' },
     }, null, 2)}\n`)
+
+    const inspected = runCli(root, [
+      'setup', '--yes', '--allow', 'src/**', '--hooks', 'none',
+    ])
+    expect(inspected.status, `${inspected.stderr}\n${inspected.stdout}`).toBe(0)
+    expect(inspected.stdout).toContain('Verification fingerprint: ')
+    expect(inspected.stdout).toContain('Verification commands remain untrusted')
+    const untrusted = runCli(root, ['verify-policy', 'status'])
+    expect(untrusted.status).toBe(1)
+    expect(untrusted.stdout).toContain('untrusted ')
 
     const setup = runCli(root, [
       'setup', '--yes', '--allow', 'src/**', '--hooks', 'none', '--trust-verify',

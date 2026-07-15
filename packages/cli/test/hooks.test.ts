@@ -438,7 +438,7 @@ describe('hook installation', () => {
     }
   })
 
-  it('keeps pre-commit-only health independent from the absent agent runner', async () => {
+  it('keeps pre-commit-only health independent from agent scope while reporting verification trust', async () => {
     const root = await repo()
     const bin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'codetruss.cmd' : 'codetruss')
     await mkdir(dirname(bin), { recursive: true })
@@ -448,6 +448,13 @@ describe('hook installation', () => {
 
     await expect(inspectLocalHookHealth(root)).resolves.toEqual({
       preCommit: 'healthy',
+      claude: 'not_installed',
+      codex: 'not_installed',
+    })
+
+    await writeFile(join(root, '.codetruss.yml'), 'version: 1\nallow: []\ndeny: []\nverify:\n  - node --version\n')
+    await expect(inspectLocalHookHealth(root)).resolves.toEqual({
+      preCommit: 'unhealthy',
       claude: 'not_installed',
       codex: 'not_installed',
     })

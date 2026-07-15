@@ -732,17 +732,24 @@ async function hookInstallations(root: string): Promise<Record<HookTarget, boole
 
 /** Privacy-safe health summary: no hook path, command, or diagnostic text leaves this function. */
 export async function inspectLocalHookHealth(root: string): Promise<LocalHookHealth> {
-  const [installed, doctor] = await Promise.all([
+  const [installed, preCommitDoctor, claudeDoctor, codexDoctor] = await Promise.all([
     hookInstallations(root),
-    inspectHookDoctor(root, 'all'),
+    inspectHookDoctor(root, 'pre-commit'),
+    inspectHookDoctor(root, 'claude'),
+    inspectHookDoctor(root, 'codex'),
   ])
+  const doctors: Record<HookTarget, HookDoctorResult> = {
+    'pre-commit': preCommitDoctor,
+    claude: claudeDoctor,
+    codex: codexDoctor,
+  }
   const status = (target: HookTarget): HookHealthStatus => {
     if (!installed[target]) return 'not_installed'
-    const relevant = doctor.checks.filter((check) => (
+    const relevant = doctors[target].checks.filter((check) => (
       check.target === target
       || check.target === 'runtime'
-      || (target !== 'pre-commit' && check.target === 'agent-runtime')
-      || (target !== 'pre-commit' && check.target === 'config')
+      || check.target === 'agent-runtime'
+      || check.target === 'config'
     ))
     if (relevant.some((check) => check.level === 'error')) return 'unhealthy'
     if (relevant.some((check) => check.level === 'warning')) return 'warning'

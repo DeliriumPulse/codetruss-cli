@@ -1,15 +1,15 @@
 {
   "$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json",
   "bomFormat": "CycloneDX",
-  "serialNumber": "urn:uuid:517518e6-7363-557e-87b2-80e6591d4095",
+  "serialNumber": "urn:uuid:749dc75b-10d5-5c8c-9c04-9410333a0c4a",
   "specVersion": "1.6",
   "version": 1,
   "metadata": {
     "component": {
       "type": "application",
-      "bom-ref": "pkg:npm/%40codetruss/cli@0.2.23",
+      "bom-ref": "pkg:npm/%40codetruss/cli@0.2.24",
       "name": "@codetruss/cli",
-      "version": "0.2.23",
+      "version": "0.2.24",
       "description": "Local-first scope, quality, and verification receipts for coding agents",
       "licenses": [
         {
@@ -18,7 +18,7 @@
           }
         }
       ],
-      "purl": "pkg:npm/%40codetruss/cli@0.2.23"
+      "purl": "pkg:npm/%40codetruss/cli@0.2.24"
     },
     "properties": [
       {
@@ -139,7 +139,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/%40codetruss/cli@0.2.23",
+      "ref": "pkg:npm/%40codetruss/cli@0.2.24",
       "dependsOn": [
         "pkg:npm/%40codetruss/analyzer-engine@0.1.0",
         "pkg:npm/minimatch@10.2.5",
