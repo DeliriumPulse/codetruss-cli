@@ -51,15 +51,16 @@ codex plugin marketplace add DeliriumPulse/codetruss-plugins
 codex plugin add codetruss@codetruss
 ```
 
-Agent Skills clients can install the same canonical skill from the public
-wrapper repository:
+Agent Skills clients can install the same canonical skill for both Claude Code
+and Codex from the public wrapper repository:
 
 ```bash
 npx --yes skills add DeliriumPulse/codetruss-plugins \
-  --skill codetruss --agent codex -y
+  --skill codetruss --agent claude-code codex -y
 ```
 
-See [DeliriumPulse/codetruss-plugins](https://github.com/DeliriumPulse/codetruss-plugins)
+See the [live skills.sh listing](https://skills.sh/deliriumpulse/codetruss-plugins/codetruss)
+or [DeliriumPulse/codetruss-plugins](https://github.com/DeliriumPulse/codetruss-plugins)
 for the MIT-licensed manifests, skill instructions, privacy guardrails, and
 marketplace source.
 
