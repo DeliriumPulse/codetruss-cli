@@ -3,7 +3,14 @@
 CodeTruss CLI follows semantic versioning. Release artifacts and their SHA-256
 checksums are published at <https://codetruss.com/downloads/codetruss-cli-latest.json>.
 
+The current public release is [v0.2.24 on GitHub](https://github.com/DeliriumPulse/codetruss-cli/releases/tag/v0.2.24)
+and [`@codetruss/cli@0.2.24` on npm](https://www.npmjs.com/package/@codetruss/cli/v/0.2.24).
+Entries explicitly marked `(unpublished)` are retained release candidates that
+were superseded before distribution.
+
 ## Unreleased
+
+No unreleased changes.
 
 ## 0.2.24 — 2026-07-15
 
