@@ -193,7 +193,7 @@ tracked or is routed through an unsafe path.
 ## Source and development
 
 This repository contains the CLI and its DB-free analyzer engine. The published
-npm package is a single bundled executable with no runtime npm dependencies.
+release archive is a single bundled executable with no runtime npm dependencies.
 
 ```bash
 corepack enable
