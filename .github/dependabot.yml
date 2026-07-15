@@ -4,7 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    # This repository mirrors tested releases from the CodeTruss monorepo.
+    # Keep security updates enabled, but evaluate routine version updates at
+    # the source so the public package and published metadata stay identical.
+    open-pull-requests-limit: 0
   - package-ecosystem: github-actions
     directory: /
     schedule:
