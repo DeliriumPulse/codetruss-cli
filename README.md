@@ -11,7 +11,20 @@ a signed `PASS`, `REVIEW_REQUIRED`, or `FAILED` receipt before a pull request.
 
 ## Quickstart
 
-macOS or Linux:
+Install from npm with Node.js 20.9 or newer:
+
+```bash
+npm install --global @codetruss/cli
+codetruss setup
+```
+
+Or run one review without a global install:
+
+```bash
+npx --yes @codetruss/cli review --task "Review my current agent changes"
+```
+
+macOS or Linux shell installer:
 
 ```bash
 curl -fsSL https://codetruss.com/install.sh | sh
@@ -163,9 +176,10 @@ and can be checked later with `codetruss verify latest`.
 
 Deterministic `run`, `review`, `report`, `list`, `metrics`, `init`, `setup`,
 `verify`, `verify-policy`, and hook checks run locally without contacting
-CodeTruss. Installation fetches release
-metadata and package bytes from CodeTruss. Optional `--llm --provider
-anthropic|openai|claude` review sends the bounded task and diff directly to the
+CodeTruss. Installing through npm fetches the package from the npm registry; the
+shell installers fetch release metadata and package bytes from CodeTruss.
+Optional review with `--llm --provider anthropic|openai|claude` sends the
+bounded task and diff directly to the
 selected provider using the developer's API key or authenticated local Claude
 Code. CodeTruss receives no receipt unless the developer explicitly runs
 `codetruss sync`; there is no background telemetry or synchronization.
@@ -193,7 +207,8 @@ tracked or is routed through an unsafe path.
 ## Source and development
 
 This repository contains the CLI and its DB-free analyzer engine. The published
-release archive is a single bundled executable with no runtime npm dependencies.
+npm package and GitHub release archive contain the same bundled executable with
+no runtime npm dependencies.
 
 ```bash
 corepack enable
@@ -214,10 +229,10 @@ gh attestation verify codetruss-cli-VERSION.tgz --repo DeliriumPulse/codetruss-c
 ```
 
 Tag-driven GitHub releases and attestations do not depend on npm credentials.
-npm publication is a separate, explicitly confirmed workflow that publishes
-the already-attested release bytes. Maintainers should follow
-[docs/RELEASE.md](docs/RELEASE.md) for repository setup and first-publish
-requirements.
+The public `@codetruss/cli` package is published by an explicitly confirmed
+workflow that sends the already-attested release bytes to npm. Maintainers
+should follow [docs/RELEASE.md](docs/RELEASE.md) for the trusted-publishing
+controls.
 
 ## License and support
 
